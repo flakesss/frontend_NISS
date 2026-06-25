@@ -24,3 +24,91 @@ body {
 .niss-pulse { animation: nissPulse 2s ease-out infinite; }
 .niss-drift { animation: nissDrift 9s ease-in-out infinite; }
 .niss-scan  { animation: nissScan  5.5s linear infinite; }
+
+/* ─── Layout responsive ──────────────────────────────────────────────────── */
+.niss-page     { padding: 24px 28px 48px; }
+.niss-live-box { height: 420px; }
+
+/* Metrics 3-stat + sidebar activity */
+.niss-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr) 1.04fr;
+  grid-auto-rows: auto;
+  gap: 20px;
+}
+.niss-metric-activity { grid-column: 4; grid-row: 1 / span 2; }
+.niss-metric-gallery  { grid-column: 1 / span 3; grid-row: 2; }
+
+/* Galeri grid */
+.niss-grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+.niss-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+
+/* Nav pills top — hidden on mobile, replaced by bottom nav */
+.niss-top-tabs  { display: flex; }
+.niss-bottom-nav { display: none; }
+
+/* ─── Mobile ≤ 768px ─────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  .niss-page     { padding: 10px 10px 80px; }
+
+  /* Live card: edge-to-edge tanpa border-radius & padding kecil */
+  .niss-live-card {
+    border-radius: 16px !important;
+    padding: 8px !important;
+  }
+
+  /* Stream mengisi hampir seluruh layar — sisakan ruang untuk top nav + kontrol + bottom nav */
+  .niss-live-box { height: calc(100svh - 210px); min-height: 280px; }
+
+  .niss-metrics {
+    grid-template-columns: 1fr 1fr;
+  }
+  .niss-metric-activity {
+    grid-column: 1 / span 2;
+    grid-row: auto;
+  }
+  .niss-metric-gallery {
+    grid-column: 1 / span 2;
+    grid-row: auto;
+  }
+
+  .niss-grid-5 { grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .niss-grid-4 { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+
+  .niss-top-tabs { display: none; }
+
+  .niss-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: #fff;
+    border-top: 1.5px solid #EFEFEF;
+    padding: 8px 0 env(safe-area-inset-bottom, 8px);
+    justify-content: space-around;
+    z-index: 100;
+    box-shadow: 0 -4px 20px rgba(0,0,0,.07);
+  }
+  .niss-bottom-nav-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 20px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .niss-bottom-nav-btn span {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .03em;
+  }
+}
+
+/* ─── Small mobile ≤ 480px ───────────────────────────────────────────────── */
+@media (max-width: 480px) {
+  .niss-page { padding: 10px 10px 80px; }
+  .niss-grid-5 { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .niss-grid-4 { grid-template-columns: 1fr 1fr; gap: 8px; }
+}

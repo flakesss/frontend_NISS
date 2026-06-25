@@ -36,7 +36,11 @@ export const getRecordingUrl   = (id) => get(`/recordings/${id}/url`)
 
 // URL streaming langsung melalui backend proxy (tidak perlu async, langsung pakai sebagai src)
 // Backend meneruskan video dari Supabase + mendukung Range request untuk seek
-export const getStreamUrl = (id) => `/api/recordings/${id}/stream`
+export const getStreamUrl    = (id) => `/api/recordings/${id}/stream`
+export const getThumbnailUrl = (id) => `/api/recordings/${id}/thumbnail`
+
+// URL live stream MJPEG dari Pi (diproxy oleh backend, tidak perlu IP Pi di frontend)
+export const LIVE_STREAM_URL = '/api/stream/live'
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 export const sendCommand = (deviceId, cmd) =>

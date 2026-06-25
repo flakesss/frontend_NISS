@@ -5,7 +5,9 @@ import {
   getRecordings,
   getRecordingUrl,
   getStreamUrl,
+  getThumbnailUrl,
   sendCommand,
+  LIVE_STREAM_URL,
 } from './api'
 
 // ─── Konstanta visual (tidak berubah) ────────────────────────────────────────
@@ -28,7 +30,7 @@ const THUMB_BG = [
 
 const DUR_HEIGHTS   = [40, 58, 34, 70, 52, 88, 46, 64, 100]
 const PHOTO_HEIGHTS = [30, 52, 44, 38, 66, 48, 80, 58, 92]
-const NAV_ITEMS     = ['Beranda', 'Live', 'Riwayat', 'Analisis AI', 'Database']
+const NAV_ITEMS     = ['Live', 'Riwayat', 'Database']
 
 const ICON_MAP = {
   photo: ['#7A5AF5', 'rgba(122,90,245,.12)'],
@@ -44,7 +46,8 @@ function overlayTagStyle(label) {
   return { position: 'absolute', top: '9px', left: '9px', color: '#fff', background: OVERLAY_COLORS[label] || '#161616', fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '7px', letterSpacing: '.04em', zIndex: 2 }
 }
 function fmtTime(n) {
-  return String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0')
+  const s = Math.round(n)
+  return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0')
 }
 function timeAgo(isoString) {
   if (!isoString) return ''
@@ -53,6 +56,62 @@ function timeAgo(isoString) {
   if (diff < 3600) return `${Math.floor(diff / 60)} mnt lalu`
   if (diff < 86400) return `${Math.floor(diff / 3600)} jam lalu`
   return `${Math.floor(diff / 86400)} hari lalu`
+}
+
+// ─── Thumbnail galeri ─────────────────────────────────────────────────────────
+function GalleryThumb({ item }) {
+  const [loaded, setLoaded] = useState(false)
+  const [error,  setError]  = useState(false)
+  const thumbUrl = item.id ? getThumbnailUrl(item.id) : null
+
+  return (
+    <div style={{ position: 'relative', height: '110px', borderRadius: '14px', overflow: 'hidden', background: item.bg || '#111' }}>
+
+      {/* Gradient placeholder — selalu ada, pudar saat gambar asli sudah muat */}
+      <div style={{
+        position: 'absolute', inset: 0,
+        background: item.bg || '#111',
+        transition: 'opacity .35s',
+        opacity: (thumbUrl && loaded && !error) ? 0 : 1,
+      }} />
+
+      {/* Thumbnail asli (foto atau frame video) */}
+      {thumbUrl && !error && (
+        <img
+          src={thumbUrl}
+          alt={item.title}
+          onLoad={() => setLoaded(true)}
+          onError={() => setError(true)}
+          style={{
+            position: 'absolute', inset: 0,
+            width: '100%', height: '100%',
+            objectFit: 'cover',
+            opacity: loaded ? 1 : 0,
+            transition: 'opacity .35s',
+          }}
+        />
+      )}
+
+      {/* Vignette tipis agar overlay teks tetap terbaca */}
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(0,0,0,.55) 0%, transparent 55%)', pointerEvents: 'none' }} />
+      <div style={{ position: 'absolute', inset: 0, boxShadow: 'inset 0 0 24px rgba(0,0,0,.35)', pointerEvents: 'none' }} />
+
+      {/* Badge tipe (Video / Foto) */}
+      <span style={overlayTagStyle(item.type)}>{item.type}</span>
+
+      {/* Tombol play untuk video */}
+      {item.isVideo && (
+        <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '36px', height: '36px', borderRadius: '50%', background: 'rgba(255,255,255,.88)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 14px rgba(0,0,0,.35)' }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="#161616"><path d="M8 5v14l11-7z"/></svg>
+        </div>
+      )}
+
+      {/* Badge durasi / IMG */}
+      <div style={{ position: 'absolute', bottom: '8px', right: '9px', fontSize: '10px', fontWeight: 600, color: '#fff', background: 'rgba(0,0,0,.55)', padding: '2px 7px', borderRadius: '6px' }}>
+        {item.dur}
+      </div>
+    </div>
+  )
 }
 
 // ─── Komponen utama ───────────────────────────────────────────────────────────
@@ -66,7 +125,9 @@ export default function NISSDashboard({
   // ── state kontrol lokal ──
   const [recording,   setRecording]   = useState(false)
   const [elapsed,     setElapsed]     = useState(0)
-  const [activeNav,   setActiveNav]   = useState('Beranda')
+  const [activeNav,   setActiveNav]   = useState('Live')
+  const [streamOk,    setStreamOk]    = useState(true)
+  const [filterType,  setFilterType]  = useState('Semua') // filter Riwayat: Semua|Video|Foto
 
   // ── state data dari backend ──
   const [activities,  setActivities]  = useState([])
@@ -127,15 +188,24 @@ export default function NISSDashboard({
   const fetchEvents = useCallback(async () => {
     try {
       const data = await getEvents()
+      // Hapus duplikat: event yang sama storage_path + event type hanya tampil sekali
+      const seen = new Set()
+      const unique = data.filter(ev => {
+        // file ada di semua event; storage_path hanya di recording_stopped & snapshot_taken
+        const key = `${ev.event}|${ev.storage_path || ev.file}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
       // Konversi event backend → format activities
-      const mapped = data.slice(0, 6).map(ev => {
+      const mapped = unique.slice(0, 6).map(ev => {
         const isPhoto  = ev.event === 'snapshot_taken'
         const isRecord = ev.event === 'recording_stopped' || ev.event === 'recording_started'
         return {
           kind: isPhoto ? 'photo' : isRecord ? 'rec' : 'ai',
           text: ev.event === 'snapshot_taken'     ? 'Foto diambil'
               : ev.event === 'recording_started'  ? 'Rekaman dimulai'
-              : ev.event === 'recording_stopped'  ? `Rekaman disimpan`
+              : ev.event === 'recording_stopped'  ? 'Rekaman disimpan'
               : ev.event,
           time: timeAgo(ev.receivedAt),
           tag:  isPhoto ? 'Foto' : isRecord ? 'Video' : 'Moderate',
@@ -150,7 +220,14 @@ export default function NISSDashboard({
   const fetchRecordings = useCallback(async () => {
     try {
       const data = await getRecordings()
-      setRecordings(data)
+      // Deduplikasi by storage_path — jaga-jaga kalau DB masih punya entri duplikat lama
+      const seen = new Set()
+      const unique = data.filter(r => {
+        if (!r.storage_path || seen.has(r.storage_path)) return false
+        seen.add(r.storage_path)
+        return true
+      })
+      setRecordings(unique)
     } catch { /* abaikan */ }
   }, [])
 
@@ -213,6 +290,8 @@ export default function NISSDashboard({
     if (!recording) return
     setRecording(false)
     sendCmd('stop')
+    // Refresh galeri setelah jeda upload (~10 detik), tidak perlu tunggu 30 detik
+    setTimeout(fetchRecordings, 10000)
   }
 
   function onPhoto() {
@@ -255,8 +334,8 @@ export default function NISSDashboard({
     ? { display: 'flex', alignItems: 'center', gap: '7px', background: '#fff', color: '#161616', border: 'none', borderRadius: '14px', padding: '11px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', opacity: cmdLoading ? 0.6 : 1 }
     : { display: 'flex', alignItems: 'center', gap: '7px', background: 'rgba(255,255,255,.08)', color: 'rgba(255,255,255,.35)', border: 'none', borderRadius: '14px', padding: '11px 20px', fontSize: '13px', fontWeight: 600, cursor: 'not-allowed', fontFamily: 'inherit' }
 
-  // ── Galeri: gabungkan recordings dari DB (real) + fallback dummy jika kosong ──
-  const galleryItems = recordings.slice(0, 5).map((r, i) => ({
+  // ── Galeri: hanya dari DB, tidak ada data palsu ──
+  const displayGallery = recordings.slice(0, 10).map((r, i) => ({
     id:      r.id,
     type:    r.type === 'video' ? 'Video' : 'Foto',
     title:   r.type === 'video' ? `Rekaman ${i + 1}` : `Foto ${i + 1}`,
@@ -266,15 +345,6 @@ export default function NISSDashboard({
     bg:      THUMB_BG[i % THUMB_BG.length],
     path:    r.storage_path,
   }))
-
-  const galleryFallback = [
-    { type: 'Video', title: 'Gastro 09:41', time: '2 mnt',  dur: '04:12', isVideo: true,  bg: THUMB_BG[0] },
-    { type: 'Foto',  title: 'Mukosa A',     time: '12 mnt', dur: 'IMG',   isVideo: false, bg: THUMB_BG[1] },
-    { type: 'Video', title: 'Colon 09:02',  time: '38 mnt', dur: '07:48', isVideo: true,  bg: THUMB_BG[2] },
-    { type: 'Foto',  title: 'Lesi B',       time: '1 jam',  dur: 'IMG',   isVideo: false, bg: THUMB_BG[3] },
-    { type: 'Video', title: 'Eso 08:30',    time: '2 jam',  dur: '02:55', isVideo: true,  bg: THUMB_BG[4] },
-  ]
-  const displayGallery = galleryItems.length > 0 ? galleryItems : galleryFallback
 
   const activityFallback = [
     { kind: 'photo', text: 'Foto diambil',          time: '2 mnt lalu',  tag: 'Foto'     },
@@ -303,7 +373,7 @@ export default function NISSDashboard({
   }, [])
 
   return (
-    <div style={{ minHeight: '100vh', background: '#EFEFEF', padding: '24px 28px 48px' }}>
+    <div className="niss-page" style={{ minHeight: '100vh', background: '#EFEFEF' }}>
       <div style={{ maxWidth: '1380px', margin: '0 auto' }}>
 
         {/* ── ERROR BANNER ── */}
@@ -329,8 +399,8 @@ export default function NISSDashboard({
             </div>
           </div>
 
-          {/* Nav tabs */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#F4F4F4', borderRadius: '14px', padding: '5px' }}>
+          {/* Nav tabs — disembunyikan di mobile, diganti bottom nav */}
+          <div className="niss-top-tabs" style={{ alignItems: 'center', gap: '4px', background: '#F4F4F4', borderRadius: '14px', padding: '5px' }}>
             {NAV_ITEMS.map(label => {
               const active = label === activeNav
               return (
@@ -360,16 +430,51 @@ export default function NISSDashboard({
           </div>
         </div>
 
+        {/* ══════════════════════════════ TAB: LIVE ══════════════════════════════ */}
+        {activeNav === 'Live' && <>
+
         {/* ── HERO ROW ── */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '20px', marginBottom: '20px' }}>
 
           {/* LIVE ENDOSKOP */}
-          <div style={{ background: '#101012', borderRadius: '24px', padding: '16px', boxShadow: '0 16px 40px rgba(20,20,20,.10)', position: 'relative', overflow: 'hidden' }}>
-            <div style={{ position: 'relative', borderRadius: '18px', overflow: 'hidden', height: '420px', background: '#000' }}>
-              <div className="niss-drift" style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 52% 42%,#d07a6a 0%,#b14d44 30%,#7d2b27 58%,#3a100f 82%,#160606 100%)' }}></div>
-              <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 30% 70%,rgba(255,180,150,.35),transparent 38%),radial-gradient(circle at 72% 30%,rgba(120,30,28,.6),transparent 45%)', mixBlendMode: 'overlay' }}></div>
-              <div style={{ position: 'absolute', inset: 0, boxShadow: 'inset 0 0 120px 30px rgba(0,0,0,.65)' }}></div>
-              <div className="niss-scan" style={{ position: 'absolute', left: 0, right: 0, height: '60px', background: 'linear-gradient(180deg,rgba(255,255,255,.05),transparent)' }}></div>
+          <div className="niss-live-card" style={{ background: '#101012', borderRadius: '24px', padding: '16px', boxShadow: '0 16px 40px rgba(20,20,20,.10)', position: 'relative', overflow: 'hidden' }}>
+            <div className="niss-live-box" style={{ position: 'relative', borderRadius: '18px', overflow: 'hidden', background: '#000' }}>
+              {/* ── Live stream dari Pi (MJPEG via backend proxy) ── */}
+              {streamOk && online ? (
+                <img
+                  key={LIVE_STREAM_URL}
+                  src={LIVE_STREAM_URL}
+                  alt="Live Endoskop"
+                  onError={() => setStreamOk(false)}
+                  onLoad={() => setStreamOk(true)}
+                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                />
+              ) : (
+                /* Fallback: Pi offline atau stream error → tampilkan placeholder */
+                <>
+                  <div className="niss-drift" style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 52% 42%,#d07a6a 0%,#b14d44 30%,#7d2b27 58%,#3a100f 82%,#160606 100%)' }}></div>
+                  <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 30% 70%,rgba(255,180,150,.35),transparent 38%),radial-gradient(circle at 72% 30%,rgba(120,30,28,.6),transparent 45%)', mixBlendMode: 'overlay' }}></div>
+                  <div style={{ position: 'absolute', inset: '0', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.3)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M22.89 3.11L1.11 20.89M8 4h12a2 2 0 0 1 2 2v10M4 8.82V18a2 2 0 0 0 2 2h10"/>
+                      <path d="m17 12 5 2.9V9.1L17 12z"/>
+                    </svg>
+                    <span style={{ color: 'rgba(255,255,255,.35)', fontSize: '13px', fontWeight: 500 }}>
+                      {online ? 'Menghubungkan ke kamera…' : 'Perangkat offline'}
+                    </span>
+                    {!streamOk && online && (
+                      <button
+                        onClick={() => setStreamOk(true)}
+                        style={{ marginTop: '4px', background: 'rgba(255,255,255,.1)', color: 'rgba(255,255,255,.6)', border: '1px solid rgba(255,255,255,.15)', borderRadius: '10px', padding: '6px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}
+                      >
+                        Coba lagi
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+              <div className="niss-scan" style={{ position: 'absolute', left: 0, right: 0, height: '60px', background: 'linear-gradient(180deg,rgba(255,255,255,.05),transparent)', pointerEvents: 'none' }}></div>
+              <div style={{ position: 'absolute', inset: 0, boxShadow: 'inset 0 0 80px 20px rgba(0,0,0,.4)', pointerEvents: 'none' }}></div>
 
               {/* top-left status */}
               <div style={{ position: 'absolute', top: '14px', left: '14px', display: 'flex', gap: '8px' }}>
@@ -425,7 +530,7 @@ export default function NISSDashboard({
         </div>
 
         {/* ── METRICS + ACTIVITY + GALLERY ── */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr) 1.04fr', gridAutoRows: 'auto', gap: '20px' }}>
+        <div className="niss-metrics">
 
           {/* Sesi Hari Ini */}
           <div style={{ background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
@@ -477,7 +582,7 @@ export default function NISSDashboard({
           </div>
 
           {/* AKTIVITAS TERBARU */}
-          <div style={{ gridColumn: 4, gridRow: '1 / span 2', background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)', display: 'flex', flexDirection: 'column' }}>
+          <div className="niss-metric-activity" style={{ background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
               <span style={{ fontSize: '15px', fontWeight: 600 }}>Aktivitas Terbaru</span>
               <button onClick={onPhoto} disabled={cmdLoading} style={{ width: '30px', height: '30px', borderRadius: '10px', background: '#161616', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: 500, lineHeight: 1, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>+</button>
@@ -502,33 +607,174 @@ export default function NISSDashboard({
           </div>
 
           {/* GALLERY */}
-          <div style={{ gridColumn: '1 / span 3', gridRow: 2, background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
+          <div className="niss-metric-gallery" style={{ background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
               <span style={{ fontSize: '15px', fontWeight: 600 }}>Galeri Rekaman &amp; Foto</span>
-              <button style={{ fontSize: '12px', fontWeight: 600, color: '#161616', background: '#F4F4F4', padding: '8px 14px', borderRadius: '11px', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>Lihat semua</button>
+              <button onClick={() => { setActiveNav('Riwayat'); setFilterType('Semua') }} style={{ fontSize: '12px', fontWeight: 600, color: '#161616', background: '#F4F4F4', padding: '8px 14px', borderRadius: '11px', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>Lihat semua</button>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: '14px' }}>
-              {displayGallery.map((item, i) => (
-                <div key={i} onClick={() => openModal(item)} style={{ cursor: 'pointer' }}>
-                  <div style={{ position: 'relative', height: '110px', borderRadius: '14px', overflow: 'hidden', background: item.bg, boxShadow: 'inset 0 0 40px 8px rgba(0,0,0,.5)' }}>
-                    <span style={overlayTagStyle(item.type)}>{item.type}</span>
-                    {item.isVideo && (
-                      <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '38px', height: '38px', borderRadius: '50%', background: 'rgba(255,255,255,.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(0,0,0,.3)' }}>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="#161616"><path d="M8 5v14l11-7z"/></svg>
-                      </div>
-                    )}
-                    <div style={{ position: 'absolute', bottom: '8px', right: '9px', fontSize: '10px', fontWeight: 600, color: '#fff', background: 'rgba(0,0,0,.5)', padding: '2px 7px', borderRadius: '6px' }}>{item.dur}</div>
+            {displayGallery.length === 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '10px', padding: '40px 0', color: '#B0B0B0' }}>
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="7" width="20" height="14" rx="2"/>
+                  <path d="M16 3l-4 4-4-4"/>
+                </svg>
+                <span style={{ fontSize: '13px', fontWeight: 500 }}>Belum ada rekaman atau foto tersimpan</span>
+              </div>
+            ) : (
+              <div className="niss-grid-5">
+                {displayGallery.map((item, i) => (
+                  <div key={item.id || i} onClick={() => openModal(item)} style={{ cursor: 'pointer' }}>
+                    <GalleryThumb item={item} />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '9px' }}>
+                      <span style={{ fontSize: '12px', fontWeight: 600 }}>{item.title}</span>
+                      <span style={{ fontSize: '11px', color: '#8A8A8A', fontWeight: 500 }}>{item.time}</span>
+                    </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '9px' }}>
-                    <span style={{ fontSize: '12px', fontWeight: 600 }}>{item.title}</span>
-                    <span style={{ fontSize: '11px', color: '#8A8A8A', fontWeight: 500 }}>{item.time}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
+
+        {/* ── akhir konten Live ── */}
+        </>}
+
+        {/* ══════════════════════════════ TAB: RIWAYAT ══════════════════════════════ */}
+        {activeNav === 'Riwayat' && (() => {
+          const filtered = recordings.filter(r =>
+            filterType === 'Semua' ? true :
+            filterType === 'Video' ? r.type === 'video' : r.type === 'foto'
+          )
+          const items = filtered.map((r, i) => ({
+            id:      r.id,
+            type:    r.type === 'video' ? 'Video' : 'Foto',
+            title:   r.type === 'video' ? `Rekaman ${i + 1}` : `Foto ${i + 1}`,
+            time:    timeAgo(r.created_at),
+            dur:     r.type === 'video' ? fmtTime(r.duration_sec || 0) : 'IMG',
+            isVideo: r.type === 'video',
+            bg:      THUMB_BG[i % THUMB_BG.length],
+            path:    r.storage_path,
+          }))
+          return (
+            <div style={{ background: '#fff', borderRadius: '22px', padding: '24px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
+              {/* Header + filter */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+                <span style={{ fontSize: '16px', fontWeight: 700 }}>Riwayat Rekaman &amp; Foto</span>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  {['Semua', 'Video', 'Foto'].map(f => (
+                    <button key={f} onClick={() => setFilterType(f)} style={{ fontSize: '12px', fontWeight: 600, padding: '7px 14px', borderRadius: '10px', border: 'none', cursor: 'pointer', fontFamily: 'inherit', background: filterType === f ? '#161616' : '#F4F4F4', color: filterType === f ? '#fff' : '#161616', transition: 'all .15s' }}>{f}</button>
+                  ))}
+                </div>
+              </div>
+              {/* Grid */}
+              {items.length === 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '60px 0', color: '#B0B0B0' }}>
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 3l-4 4-4-4"/></svg>
+                  <span style={{ fontSize: '13px', fontWeight: 500 }}>Tidak ada {filterType === 'Semua' ? 'rekaman atau foto' : filterType.toLowerCase()} tersimpan</span>
+                </div>
+              ) : (
+                <div className="niss-grid-4">
+                  {items.map((item, i) => (
+                    <div key={item.id || i} onClick={() => openModal(item)} style={{ cursor: 'pointer' }}>
+                      <GalleryThumb item={item} />
+                      <div style={{ marginTop: '10px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 600 }}>{item.title}</div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '4px' }}>
+                          <span style={{ fontSize: '11px', color: '#8A8A8A', fontWeight: 500 }}>{item.time}</span>
+                          {item.isVideo && <span style={{ fontSize: '11px', fontWeight: 600, color: '#2A6FDB' }}>{item.dur}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })()}
+
+        {/* ══════════════════════════════ TAB: DATABASE ══════════════════════════════ */}
+        {activeNav === 'Database' && (
+          <div style={{ background: '#fff', borderRadius: '22px', padding: '24px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+              <span style={{ fontSize: '16px', fontWeight: 700 }}>Database Media</span>
+              <span style={{ fontSize: '12px', color: '#8A8A8A', fontWeight: 500 }}>{recordings.length} file tersimpan</span>
+            </div>
+            {recordings.length === 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px', padding: '60px 0', color: '#B0B0B0' }}>
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                <span style={{ fontSize: '13px', fontWeight: 500 }}>Belum ada data tersimpan</span>
+              </div>
+            ) : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '2px solid #F2F2F2' }}>
+                      {['#', 'Tipe', 'Nama File', 'Tanggal', 'Durasi', 'Aksi'].map(h => (
+                        <th key={h} style={{ textAlign: 'left', padding: '10px 14px', fontSize: '11px', fontWeight: 600, color: '#8A8A8A', letterSpacing: '.04em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recordings.map((r, i) => {
+                      const item = { id: r.id, type: r.type === 'video' ? 'Video' : 'Foto', title: r.type === 'video' ? `Rekaman ${i + 1}` : `Foto ${i + 1}`, time: timeAgo(r.created_at), dur: r.type === 'video' ? fmtTime(r.duration_sec || 0) : '—', isVideo: r.type === 'video', bg: THUMB_BG[i % THUMB_BG.length], path: r.storage_path }
+                      return (
+                        <tr key={r.id} style={{ borderBottom: '1px solid #F2F2F2' }} onMouseEnter={e => e.currentTarget.style.background='#FAFAFA'} onMouseLeave={e => e.currentTarget.style.background='transparent'}>
+                          <td style={{ padding: '12px 14px', color: '#8A8A8A', fontWeight: 500 }}>{i + 1}</td>
+                          <td style={{ padding: '12px 14px' }}>
+                            <span style={{ fontSize: '11px', fontWeight: 700, padding: '3px 9px', borderRadius: '7px', color: r.type === 'video' ? '#2A6FDB' : '#7A5AF5', background: r.type === 'video' ? 'rgba(42,111,219,.12)' : 'rgba(122,90,245,.12)' }}>{r.type === 'video' ? 'Video' : 'Foto'}</span>
+                          </td>
+                          <td style={{ padding: '12px 14px', fontWeight: 500, maxWidth: '220px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.storage_path?.split('/').pop() || '—'}</td>
+                          <td style={{ padding: '12px 14px', color: '#8A8A8A', whiteSpace: 'nowrap' }}>{r.created_at ? new Date(r.created_at).toLocaleString('id-ID') : '—'}</td>
+                          <td style={{ padding: '12px 14px', fontWeight: 600, color: '#161616' }}>{r.type === 'video' ? fmtTime(r.duration_sec || 0) : '—'}</td>
+                          <td style={{ padding: '12px 14px' }}>
+                            <button onClick={() => openModal(item)} style={{ fontSize: '12px', fontWeight: 600, padding: '6px 12px', borderRadius: '9px', border: 'none', background: '#F4F4F4', color: '#161616', cursor: 'pointer', fontFamily: 'inherit' }}>Putar</button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
+
+      {/* ── BOTTOM NAV (mobile only, via CSS) ── */}
+      <nav className="niss-bottom-nav">
+        {[
+          { label: 'Live', icon: (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22.89 3.11L1.11 20.89M8 4h12a2 2 0 0 1 2 2v10M4 8.82V18a2 2 0 0 0 2 2h10"/>
+              <path d="m17 12 5 2.9V9.1L17 12z"/>
+            </svg>
+          )},
+          { label: 'Riwayat', icon: (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+          )},
+          { label: 'Database', icon: (
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <ellipse cx="12" cy="5" rx="9" ry="3"/>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+            </svg>
+          )},
+        ].map(({ label, icon }) => {
+          const active = label === activeNav
+          return (
+            <button key={label} className="niss-bottom-nav-btn" onClick={() => setActiveNav(label)}
+              style={{ color: active ? '#161616' : '#AAAAAA' }}>
+              {icon}
+              <span style={{ color: active ? '#161616' : '#AAAAAA' }}>{label}</span>
+              {active && <div style={{ width: '18px', height: '3px', borderRadius: '2px', background: '#161616', marginTop: '1px' }} />}
+            </button>
+          )
+        })}
+      </nav>
 
       {/* ── MODAL ── */}
       {modalOpen && (
