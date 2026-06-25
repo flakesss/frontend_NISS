@@ -1,0 +1,650 @@
+import { useState, useEffect, useRef, useCallback } from 'react'
+import {
+  getDevice,
+  getEvents,
+  getRecordings,
+  getRecordingUrl,
+  getStreamUrl,
+  sendCommand,
+} from './api'
+
+// ─── Konstanta visual (tidak berubah) ────────────────────────────────────────
+const TAG_COLORS = {
+  Normal:   ['#5BC079', 'rgba(91,192,121,.14)'],
+  Moderate: ['#F5A623', 'rgba(245,166,35,.16)'],
+  Risiko:   ['#EF4444', 'rgba(239,68,68,.14)'],
+  Video:    ['#2A6FDB', 'rgba(42,111,219,.14)'],
+  Foto:     ['#7A5AF5', 'rgba(122,90,245,.14)'],
+}
+const OVERLAY_COLORS = { Video: '#2A6FDB', Foto: '#7A5AF5' }
+
+const THUMB_BG = [
+  'radial-gradient(circle at 50% 42%,#d07a6a,#9c3f38 45%,#4a1614 80%,#1c0807)',
+  'radial-gradient(circle at 40% 50%,#caa15a,#9c6f34 45%,#4a2e12 82%,#1c1206)',
+  'radial-gradient(circle at 58% 38%,#c96a78,#8e3346 46%,#451221 82%,#1c0710)',
+  'radial-gradient(circle at 46% 54%,#b87a6a,#8a463a 46%,#42201a 82%,#180a08)',
+  'radial-gradient(circle at 52% 46%,#d4856e,#a84f3e 45%,#511f17 82%,#1e0a07)',
+]
+
+const DUR_HEIGHTS   = [40, 58, 34, 70, 52, 88, 46, 64, 100]
+const PHOTO_HEIGHTS = [30, 52, 44, 38, 66, 48, 80, 58, 92]
+const NAV_ITEMS     = ['Beranda', 'Live', 'Riwayat', 'Analisis AI', 'Database']
+
+const ICON_MAP = {
+  photo: ['#7A5AF5', 'rgba(122,90,245,.12)'],
+  rec:   ['#2A6FDB', 'rgba(42,111,219,.12)'],
+  ai:    ['#F5A623', 'rgba(245,166,35,.12)'],
+}
+
+function tagStyle(label) {
+  const c = TAG_COLORS[label] || ['#8A8A8A', 'rgba(138,138,138,.14)']
+  return { color: c[0], background: c[1], fontSize: '10px', fontWeight: 600, padding: '4px 9px', borderRadius: '7px', letterSpacing: '.03em', whiteSpace: 'nowrap' }
+}
+function overlayTagStyle(label) {
+  return { position: 'absolute', top: '9px', left: '9px', color: '#fff', background: OVERLAY_COLORS[label] || '#161616', fontSize: '10px', fontWeight: 700, padding: '3px 9px', borderRadius: '7px', letterSpacing: '.04em', zIndex: 2 }
+}
+function fmtTime(n) {
+  return String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0')
+}
+function timeAgo(isoString) {
+  if (!isoString) return ''
+  const diff = Math.floor((Date.now() - new Date(isoString)) / 1000)
+  if (diff < 60)  return `${diff} dtk lalu`
+  if (diff < 3600) return `${Math.floor(diff / 60)} mnt lalu`
+  if (diff < 86400) return `${Math.floor(diff / 3600)} jam lalu`
+  return `${Math.floor(diff / 86400)} hari lalu`
+}
+
+// ─── Komponen utama ───────────────────────────────────────────────────────────
+export default function NISSDashboard({
+  deviceId    = 'endoskop-01',
+}) {
+  // ── state device (dari backend) ──
+  const [deviceInfo,  setDeviceInfo]  = useState(null)          // { status, lastSeen, … }
+  const [online,      setOnline]      = useState(false)
+
+  // ── state kontrol lokal ──
+  const [recording,   setRecording]   = useState(false)
+  const [elapsed,     setElapsed]     = useState(0)
+  const [activeNav,   setActiveNav]   = useState('Beranda')
+
+  // ── state data dari backend ──
+  const [activities,  setActivities]  = useState([])
+  const [recordings,  setRecordings]  = useState([])
+  const [modalOpen,   setModalOpen]   = useState(false)
+  const [modalItem,   setModalItem]   = useState({})
+  const [modalUrl,    setModalUrl]    = useState(null)
+  const [urlLoading,  setUrlLoading]  = useState(false)
+  const [videoError,  setVideoError]  = useState(null)
+  const [cmdLoading,  setCmdLoading]  = useState(false)
+  const [cmdError,    setCmdError]    = useState(null)
+
+  const recordingRef  = useRef(recording)
+  recordingRef.current = recording
+
+  // Refs untuk grace-period setelah kirim command —
+  // mencegah polling paksa-reset state rekaman.
+  const cmdSentAtRef = useRef(null)   // timestamp terakhir command dikirim
+  const lastCmdRef   = useRef(null)   // nama command terakhir ('rekam'|'stop'|'foto')
+  const GRACE_MS     = 12_000        // 12 detik grace period
+
+  // ── Timer rekaman lokal ──
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (recordingRef.current) setElapsed(e => e + 1)
+    }, 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  // ── Polling: status device setiap 3 detik ──
+  const fetchDevice = useCallback(async () => {
+    try {
+      const data = await getDevice(deviceId)
+      setDeviceInfo(data)
+      setOnline(data.status === 'online' || data.status === 'idle' || data.status === 'recording')
+
+      // Jangan override state lokal selama grace period setelah command dikirim.
+      // Ini mencegah polling me-reset UI sebelum Pi sempat memperbarui statusnya.
+      const cmdAge      = cmdSentAtRef.current ? Date.now() - cmdSentAtRef.current : Infinity
+      const inGrace     = cmdAge < GRACE_MS
+
+      if (!inGrace) {
+        // Di luar grace period → sinkronkan dengan status nyata dari device
+        if (data.status === 'recording' && !recordingRef.current) {
+          setRecording(true)
+          setElapsed(0)
+        } else if (data.status !== 'recording' && recordingRef.current) {
+          // Device berhenti merekam dari sisi Pi (bukan dari tombol Stop UI)
+          setRecording(false)
+        }
+      }
+    } catch {
+      setOnline(false)
+    }
+  }, [deviceId])
+
+  // ── Polling: events terbaru setiap 5 detik ──
+  const fetchEvents = useCallback(async () => {
+    try {
+      const data = await getEvents()
+      // Konversi event backend → format activities
+      const mapped = data.slice(0, 6).map(ev => {
+        const isPhoto  = ev.event === 'snapshot_taken'
+        const isRecord = ev.event === 'recording_stopped' || ev.event === 'recording_started'
+        return {
+          kind: isPhoto ? 'photo' : isRecord ? 'rec' : 'ai',
+          text: ev.event === 'snapshot_taken'     ? 'Foto diambil'
+              : ev.event === 'recording_started'  ? 'Rekaman dimulai'
+              : ev.event === 'recording_stopped'  ? `Rekaman disimpan`
+              : ev.event,
+          time: timeAgo(ev.receivedAt),
+          tag:  isPhoto ? 'Foto' : isRecord ? 'Video' : 'Moderate',
+          raw:  ev,
+        }
+      })
+      if (mapped.length > 0) setActivities(mapped)
+    } catch { /* abaikan, backend mungkin belum ready */ }
+  }, [])
+
+  // ── Load recordings (galeri) satu kali saat mount + setiap 30 detik ──
+  const fetchRecordings = useCallback(async () => {
+    try {
+      const data = await getRecordings()
+      setRecordings(data)
+    } catch { /* abaikan */ }
+  }, [])
+
+  useEffect(() => {
+    fetchDevice()
+    fetchEvents()
+    fetchRecordings()
+
+    const deviceTimer     = setInterval(fetchDevice,     3000)
+    const eventsTimer     = setInterval(fetchEvents,     5000)
+    const recordingsTimer = setInterval(fetchRecordings, 30000)
+
+    return () => {
+      clearInterval(deviceTimer)
+      clearInterval(eventsTimer)
+      clearInterval(recordingsTimer)
+    }
+  }, [fetchDevice, fetchEvents, fetchRecordings])
+
+  // ── Helpers untuk menghitung statistik dari recordings ──
+  const videoRecordings = recordings.filter(r => r.type === 'video')
+  const photoRecordings = recordings.filter(r => r.type === 'foto')
+  const totalDurationSec = videoRecordings.reduce((acc, r) => acc + (r.duration_sec || 0), 0)
+  const totalDurationMnt = Math.round(totalDurationSec / 60)
+  const sessionsToday = recordings.filter(r => {
+    const d = new Date(r.created_at)
+    const now = new Date()
+    return d.getFullYear() === now.getFullYear() &&
+           d.getMonth() === now.getMonth() &&
+           d.getDate() === now.getDate()
+  }).length
+
+  // ── Kirim perintah ke device ──
+  async function sendCmd(cmd) {
+    setCmdError(null)
+    setCmdLoading(true)
+    // Catat waktu & nama command agar grace period aktif
+    cmdSentAtRef.current = Date.now()
+    lastCmdRef.current   = cmd
+    try {
+      await sendCommand(deviceId, cmd)
+    } catch (e) {
+      setCmdError(e.message)
+      // Batalkan grace period jika command gagal terkirim
+      cmdSentAtRef.current = null
+      lastCmdRef.current   = null
+    } finally {
+      setCmdLoading(false)
+    }
+  }
+
+  function onRecord() {
+    if (recording) { onStop(); return }
+    setRecording(true)
+    setElapsed(0)
+    sendCmd('rekam')
+  }
+
+  function onStop() {
+    if (!recording) return
+    setRecording(false)
+    sendCmd('stop')
+  }
+
+  function onPhoto() {
+    sendCmd('foto')
+  }
+
+  // ── Buka modal galeri + ambil media URL ──
+  async function openModal(item) {
+    setModalItem(item)
+    setModalUrl(null)
+    setVideoError(null)
+    setModalOpen(true)
+
+    if (!item.id) return  // item dummy/fallback tidak punya id
+
+    setUrlLoading(true)
+    try {
+      if (item.isVideo) {
+        // Untuk video: gunakan streaming proxy backend secara langsung.
+        // Ini menghindari CORS dan masalah MIME type dari Supabase.
+        // Backend juga mendukung Range request sehingga seek video berfungsi.
+        setModalUrl(getStreamUrl(item.id))
+      } else {
+        // Untuk foto: signed URL sudah cukup (browser tidak strict CORS pada <img>)
+        const { url } = await getRecordingUrl(item.id)
+        setModalUrl(url)
+      }
+    } catch (e) {
+      setVideoError('Gagal mengambil URL media: ' + e.message)
+    } finally {
+      setUrlLoading(false)
+    }
+  }
+
+  const recBtnStyle = recording
+    ? { display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(239,68,68,.16)', color: '#EF4444', border: '1.5px solid #EF4444', borderRadius: '14px', padding: '10px 20px', fontSize: '13px', fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', opacity: cmdLoading ? 0.6 : 1 }
+    : { display: 'flex', alignItems: 'center', gap: '8px', background: '#EF4444', color: '#fff', border: 'none', borderRadius: '14px', padding: '11px 22px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', opacity: cmdLoading ? 0.6 : 1 }
+
+  const stopBtnStyle = recording
+    ? { display: 'flex', alignItems: 'center', gap: '7px', background: '#fff', color: '#161616', border: 'none', borderRadius: '14px', padding: '11px 20px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', opacity: cmdLoading ? 0.6 : 1 }
+    : { display: 'flex', alignItems: 'center', gap: '7px', background: 'rgba(255,255,255,.08)', color: 'rgba(255,255,255,.35)', border: 'none', borderRadius: '14px', padding: '11px 20px', fontSize: '13px', fontWeight: 600, cursor: 'not-allowed', fontFamily: 'inherit' }
+
+  // ── Galeri: gabungkan recordings dari DB (real) + fallback dummy jika kosong ──
+  const galleryItems = recordings.slice(0, 5).map((r, i) => ({
+    id:      r.id,
+    type:    r.type === 'video' ? 'Video' : 'Foto',
+    title:   r.type === 'video' ? `Rekaman ${i + 1}` : `Foto ${i + 1}`,
+    time:    timeAgo(r.created_at),
+    dur:     r.type === 'video' ? fmtTime(r.duration_sec || 0) : 'IMG',
+    isVideo: r.type === 'video',
+    bg:      THUMB_BG[i % THUMB_BG.length],
+    path:    r.storage_path,
+  }))
+
+  const galleryFallback = [
+    { type: 'Video', title: 'Gastro 09:41', time: '2 mnt',  dur: '04:12', isVideo: true,  bg: THUMB_BG[0] },
+    { type: 'Foto',  title: 'Mukosa A',     time: '12 mnt', dur: 'IMG',   isVideo: false, bg: THUMB_BG[1] },
+    { type: 'Video', title: 'Colon 09:02',  time: '38 mnt', dur: '07:48', isVideo: true,  bg: THUMB_BG[2] },
+    { type: 'Foto',  title: 'Lesi B',       time: '1 jam',  dur: 'IMG',   isVideo: false, bg: THUMB_BG[3] },
+    { type: 'Video', title: 'Eso 08:30',    time: '2 jam',  dur: '02:55', isVideo: true,  bg: THUMB_BG[4] },
+  ]
+  const displayGallery = galleryItems.length > 0 ? galleryItems : galleryFallback
+
+  const activityFallback = [
+    { kind: 'photo', text: 'Foto diambil',          time: '2 mnt lalu',  tag: 'Foto'     },
+    { kind: 'rec',   text: 'Rekaman disimpan',       time: '14 mnt lalu', tag: 'Video'    },
+    { kind: 'ai',    text: 'Analisis AI selesai',    time: '38 mnt lalu', tag: 'Moderate' },
+    { kind: 'photo', text: 'Foto diambil',           time: '52 mnt lalu', tag: 'Foto'     },
+    { kind: 'rec',   text: 'Sesi endoskop dimulai',  time: '1 jam lalu',  tag: 'Normal'   },
+  ]
+  const displayActivities = activities.length > 0 ? activities : activityFallback
+
+  const displaySessions = sessionsToday  > 0 ? sessionsToday  : 5
+  const displayPhotos   = photoRecordings.length > 0 ? photoRecordings.length : 14
+  const displayDuration = totalDurationMnt > 0 ? totalDurationMnt : 82
+
+  // ── Timestamp live ──
+  const [nowStr, setNowStr] = useState('')
+  useEffect(() => {
+    function tick() {
+      const d = new Date()
+      setNowStr(d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }) +
+        ' · ' + d.toLocaleTimeString('id-ID'))
+    }
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#EFEFEF', padding: '24px 28px 48px' }}>
+      <div style={{ maxWidth: '1380px', margin: '0 auto' }}>
+
+        {/* ── ERROR BANNER ── */}
+        {cmdError && (
+          <div style={{ background: 'rgba(239,68,68,.1)', border: '1px solid rgba(239,68,68,.3)', borderRadius: '12px', padding: '10px 16px', marginBottom: '16px', color: '#EF4444', fontSize: '13px', fontWeight: 500, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span>⚠️ {cmdError}</span>
+            <button onClick={() => setCmdError(null)} style={{ background: 'none', border: 'none', color: '#EF4444', cursor: 'pointer', fontSize: '16px' }}>×</button>
+          </div>
+        )}
+
+        {/* ── TOP NAV ── */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#FFFFFF', borderRadius: '22px', padding: '12px 16px 12px 18px', boxShadow: '0 8px 26px rgba(20,20,20,.05)', marginBottom: '22px' }}>
+          {/* Logo */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '11px' }}>
+            <div style={{ width: '34px', height: '34px', borderRadius: '11px', background: '#161616', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
+                <path d="M10 3h4v7h7v4h-7v7h-4v-7H3v-4h7z" fill="#5BC079"/>
+              </svg>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1 }}>
+              <span style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '.04em' }}>NISS</span>
+              <span style={{ fontSize: '10px', fontWeight: 500, color: '#8A8A8A', letterSpacing: '.06em', marginTop: '3px' }}>ENDOSCOPY</span>
+            </div>
+          </div>
+
+          {/* Nav tabs */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#F4F4F4', borderRadius: '14px', padding: '5px' }}>
+            {NAV_ITEMS.map(label => {
+              const active = label === activeNav
+              return (
+                <button key={label} onClick={() => setActiveNav(label)} style={{ background: active ? '#161616' : 'transparent', color: active ? '#fff' : '#161616', fontSize: '13px', fontWeight: active ? 600 : 500, padding: '8px 16px', borderRadius: '10px', whiteSpace: 'nowrap', transition: 'all .15s ease', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  {label}
+                </button>
+              )
+            })}
+          </div>
+
+          {/* Bell + user */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <button style={{ width: '40px', height: '40px', borderRadius: '13px', background: '#F4F4F4', display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'relative', border: 'none', cursor: 'pointer' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#161616" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>
+                <path d="M13.7 21a2 2 0 0 1-3.4 0"/>
+              </svg>
+              <span style={{ position: 'absolute', top: '9px', right: '10px', width: '7px', height: '7px', borderRadius: '50%', background: '#EF4444', border: '2px solid #F4F4F4' }}></span>
+            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '9px', background: '#F4F4F4', borderRadius: '13px', padding: '5px 12px 5px 5px' }}>
+              <div style={{ width: '30px', height: '30px', borderRadius: '9px', background: 'linear-gradient(135deg,#5BC079,#3a8f57)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', fontSize: '12px', fontWeight: 700 }}>DA</div>
+              <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
+                <span style={{ fontSize: '12px', fontWeight: 600 }}>dr. Anita</span>
+                <span style={{ fontSize: '10px', color: '#8A8A8A', fontWeight: 500 }}>Operator</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── HERO ROW ── */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '20px', marginBottom: '20px' }}>
+
+          {/* LIVE ENDOSKOP */}
+          <div style={{ background: '#101012', borderRadius: '24px', padding: '16px', boxShadow: '0 16px 40px rgba(20,20,20,.10)', position: 'relative', overflow: 'hidden' }}>
+            <div style={{ position: 'relative', borderRadius: '18px', overflow: 'hidden', height: '420px', background: '#000' }}>
+              <div className="niss-drift" style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 52% 42%,#d07a6a 0%,#b14d44 30%,#7d2b27 58%,#3a100f 82%,#160606 100%)' }}></div>
+              <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(circle at 30% 70%,rgba(255,180,150,.35),transparent 38%),radial-gradient(circle at 72% 30%,rgba(120,30,28,.6),transparent 45%)', mixBlendMode: 'overlay' }}></div>
+              <div style={{ position: 'absolute', inset: 0, boxShadow: 'inset 0 0 120px 30px rgba(0,0,0,.65)' }}></div>
+              <div className="niss-scan" style={{ position: 'absolute', left: 0, right: 0, height: '60px', background: 'linear-gradient(180deg,rgba(255,255,255,.05),transparent)' }}></div>
+
+              {/* top-left status */}
+              <div style={{ position: 'absolute', top: '14px', left: '14px', display: 'flex', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', background: 'rgba(0,0,0,.45)', backdropFilter: 'blur(6px)', borderRadius: '11px', padding: '6px 11px' }}>
+                  <span style={{ position: 'relative', width: '8px', height: '8px', flexShrink: 0 }}>
+                    <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: online ? '#5BC079' : '#8A8A8A' }}></span>
+                    <span className="niss-pulse" style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: online ? '#5BC079' : '#8A8A8A' }}></span>
+                  </span>
+                  <span style={{ color: '#fff', fontSize: '11px', fontWeight: 600, letterSpacing: '.03em' }}>
+                    {online ? (deviceInfo?.status ?? 'Online') : 'Offline'}
+                  </span>
+                </div>
+                {recording && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '7px', background: 'rgba(239,68,68,.92)', borderRadius: '11px', padding: '6px 11px' }}>
+                    <span className="niss-blink" style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#fff', flexShrink: 0 }}></span>
+                    <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700, letterSpacing: '.06em' }}>REC {fmtTime(elapsed)}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* top-right device */}
+              <div style={{ position: 'absolute', top: '14px', right: '14px', textAlign: 'right' }}>
+                <div style={{ color: '#fff', fontSize: '12px', fontWeight: 600 }}>{deviceId}</div>
+                <div style={{ color: 'rgba(255,255,255,.6)', fontSize: '10px', fontWeight: 500, marginTop: '3px', letterSpacing: '.04em' }}>1920×1080 · 30 FPS</div>
+              </div>
+
+              {/* crosshair */}
+              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '54px', height: '54px', border: '1px solid rgba(255,255,255,.22)', borderRadius: '50%' }}></div>
+              <div style={{ position: 'absolute', bottom: '14px', left: '14px', color: 'rgba(255,255,255,.55)', fontSize: '10px', fontWeight: 500, letterSpacing: '.05em' }}>{nowStr}</div>
+            </div>
+
+            {/* capture controls */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '18px 6px 6px' }}>
+              <button onClick={onRecord} disabled={cmdLoading} style={recBtnStyle}>
+                <span className={recording ? 'niss-blink' : ''} style={{ width: '10px', height: '10px', borderRadius: '50%', background: recording ? '#EF4444' : '#fff', flexShrink: 0 }}></span>
+                <span>{recording ? 'Merekam…' : 'Rekam'}</span>
+              </button>
+              <button onClick={onStop} disabled={!recording || cmdLoading} style={stopBtnStyle}>
+                <svg width="13" height="13" viewBox="0 0 24 24">
+                  <rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor"/>
+                </svg>
+                <span>Stop</span>
+              </button>
+              <button onClick={onPhoto} disabled={cmdLoading} style={{ display: 'flex', alignItems: 'center', gap: '8px', background: '#FFFFFF', color: '#161616', border: 'none', borderRadius: '14px', padding: '11px 20px', fontSize: '13px', fontWeight: 600, cursor: cmdLoading ? 'not-allowed' : 'pointer', fontFamily: 'inherit', opacity: cmdLoading ? 0.6 : 1 }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M14.5 4h-5L8 6H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-4z"/>
+                  <circle cx="12" cy="13" r="3.5"/>
+                </svg>
+                <span>Foto</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── METRICS + ACTIVITY + GALLERY ── */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr) 1.04fr', gridAutoRows: 'auto', gap: '20px' }}>
+
+          {/* Sesi Hari Ini */}
+          <div style={{ background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600, color: '#8A8A8A', letterSpacing: '.05em', textTransform: 'uppercase' }}>Sesi Hari Ini</span>
+              <span style={{ fontSize: '10px', fontWeight: 600, color: '#5BC079', background: 'rgba(91,192,121,.12)', padding: '4px 8px', borderRadius: '7px' }}>Normal</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', margin: '14px 0 12px' }}>
+              <span style={{ fontSize: '34px', fontWeight: 700, lineHeight: 1 }}>{displaySessions}</span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#8A8A8A', marginBottom: '5px' }}>rekaman</span>
+            </div>
+            <svg width="100%" height="34" viewBox="0 0 120 34" preserveAspectRatio="none">
+              <path d="M0 26 L18 20 L36 24 L54 12 L72 18 L90 8 L108 14 L120 6" fill="none" stroke="#5BC079" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </div>
+
+          {/* Total Durasi */}
+          <div style={{ background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600, color: '#8A8A8A', letterSpacing: '.05em', textTransform: 'uppercase' }}>Total Durasi</span>
+              <span style={{ fontSize: '10px', fontWeight: 600, color: '#F5A623', background: 'rgba(245,166,35,.12)', padding: '4px 8px', borderRadius: '7px' }}>+12%</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', margin: '14px 0 12px' }}>
+              <span style={{ fontSize: '34px', fontWeight: 700, lineHeight: 1 }}>{displayDuration}</span>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#8A8A8A', marginBottom: '4px' }}>mnt</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '5px', height: '34px' }}>
+              {DUR_HEIGHTS.map((h, i) => (
+                <div key={i} style={{ flex: 1, height: `${h}%`, minHeight: '5px', background: h >= 88 ? '#F5A623' : '#E2E2E2', borderRadius: '3px' }}></div>
+              ))}
+            </div>
+          </div>
+
+          {/* Jumlah Foto */}
+          <div style={{ background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600, color: '#8A8A8A', letterSpacing: '.05em', textTransform: 'uppercase' }}>Jumlah Foto</span>
+              <span style={{ fontSize: '10px', fontWeight: 600, color: '#5BC079', background: 'rgba(91,192,121,.12)', padding: '4px 8px', borderRadius: '7px' }}>Tersimpan</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '6px', margin: '14px 0 12px' }}>
+              <span style={{ fontSize: '34px', fontWeight: 700, lineHeight: 1 }}>{displayPhotos}</span>
+              <span style={{ fontSize: '12px', fontWeight: 500, color: '#8A8A8A', marginBottom: '5px' }}>gambar</span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '5px', height: '34px' }}>
+              {PHOTO_HEIGHTS.map((h, i) => (
+                <div key={i} style={{ flex: 1, height: `${h}%`, minHeight: '5px', background: h >= 80 ? '#5BC079' : '#E2E2E2', borderRadius: '3px' }}></div>
+              ))}
+            </div>
+          </div>
+
+          {/* AKTIVITAS TERBARU */}
+          <div style={{ gridColumn: 4, gridRow: '1 / span 2', background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <span style={{ fontSize: '15px', fontWeight: 600 }}>Aktivitas Terbaru</span>
+              <button onClick={onPhoto} disabled={cmdLoading} style={{ width: '30px', height: '30px', borderRadius: '10px', background: '#161616', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: 500, lineHeight: 1, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>+</button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              {displayActivities.map((a, i) => {
+                const c = ICON_MAP[a.kind] || ICON_MAP.rec
+                return (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '11px 0', borderBottom: '1px solid #F2F2F2' }}>
+                    <div style={{ width: '34px', height: '34px', borderRadius: '11px', background: c[1], display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <span style={{ width: '11px', height: '11px', borderRadius: a.kind === 'rec' ? '50%' : '3px', background: c[0] }}></span>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '13px', fontWeight: 600, lineHeight: 1.3 }}>{a.text}</div>
+                      <div style={{ fontSize: '11px', color: '#8A8A8A', fontWeight: 500, marginTop: '2px' }}>{a.time}</div>
+                    </div>
+                    <span style={tagStyle(a.tag)}>{a.tag}</span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* GALLERY */}
+          <div style={{ gridColumn: '1 / span 3', gridRow: 2, background: '#fff', borderRadius: '22px', padding: '20px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+              <span style={{ fontSize: '15px', fontWeight: 600 }}>Galeri Rekaman &amp; Foto</span>
+              <button style={{ fontSize: '12px', fontWeight: 600, color: '#161616', background: '#F4F4F4', padding: '8px 14px', borderRadius: '11px', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>Lihat semua</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: '14px' }}>
+              {displayGallery.map((item, i) => (
+                <div key={i} onClick={() => openModal(item)} style={{ cursor: 'pointer' }}>
+                  <div style={{ position: 'relative', height: '110px', borderRadius: '14px', overflow: 'hidden', background: item.bg, boxShadow: 'inset 0 0 40px 8px rgba(0,0,0,.5)' }}>
+                    <span style={overlayTagStyle(item.type)}>{item.type}</span>
+                    {item.isVideo && (
+                      <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '38px', height: '38px', borderRadius: '50%', background: 'rgba(255,255,255,.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 12px rgba(0,0,0,.3)' }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="#161616"><path d="M8 5v14l11-7z"/></svg>
+                      </div>
+                    )}
+                    <div style={{ position: 'absolute', bottom: '8px', right: '9px', fontSize: '10px', fontWeight: 600, color: '#fff', background: 'rgba(0,0,0,.5)', padding: '2px 7px', borderRadius: '6px' }}>{item.dur}</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '9px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600 }}>{item.title}</span>
+                    <span style={{ fontSize: '11px', color: '#8A8A8A', fontWeight: 500 }}>{item.time}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── MODAL ── */}
+      {modalOpen && (
+        <div onClick={() => setModalOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(16,16,18,.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '40px' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: '#101012', borderRadius: '24px', padding: '16px', width: '780px', maxWidth: '100%', boxShadow: '0 30px 80px rgba(0,0,0,.4)' }}>
+
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 8px 14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span style={overlayTagStyle(modalItem.type)}>{modalItem.type}</span>
+                <span style={{ color: '#fff', fontSize: '14px', fontWeight: 600 }}>{modalItem.title}</span>
+                <span style={{ color: 'rgba(255,255,255,.5)', fontSize: '12px', fontWeight: 500 }}>{modalItem.time}</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {/* Tombol download sebagai fallback */}
+                {modalUrl && (
+                  <a
+                    href={modalUrl}
+                    download
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(255,255,255,.08)', color: 'rgba(255,255,255,.7)', borderRadius: '10px', padding: '7px 12px', fontSize: '12px', fontWeight: 600, textDecoration: 'none' }}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                      <path d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16"/>
+                    </svg>
+                    Unduh
+                  </a>
+                )}
+                <button onClick={() => setModalOpen(false)} style={{ width: '32px', height: '32px', borderRadius: '10px', background: 'rgba(255,255,255,.08)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer' }}>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
+                    <path d="M6 6l12 12M18 6L6 18"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Area media */}
+            <div style={{ position: 'relative', height: '420px', borderRadius: '16px', overflow: 'hidden', background: modalItem.bg || '#000', boxShadow: 'inset 0 0 100px 20px rgba(0,0,0,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+
+              {/* ── Loading spinner (saat fetch signed URL) ── */}
+              {urlLoading && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '14px' }}>
+                  <div style={{ width: '40px', height: '40px', border: '3px solid rgba(255,255,255,.15)', borderTopColor: '#fff', borderRadius: '50%', animation: 'niss-spin 0.8s linear infinite' }} />
+                  <span style={{ color: 'rgba(255,255,255,.6)', fontSize: '13px', fontWeight: 500 }}>Memuat media…</span>
+                </div>
+              )}
+
+              {/* ── Error state ── */}
+              {!urlLoading && videoError && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', padding: '24px', textAlign: 'center' }}>
+                  <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: 'rgba(239,68,68,.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2" strokeLinecap="round">
+                      <circle cx="12" cy="12" r="10"/>
+                      <path d="M12 8v4m0 4h.01"/>
+                    </svg>
+                  </div>
+                  <span style={{ color: '#EF4444', fontSize: '13px', fontWeight: 600 }}>{videoError}</span>
+                  {modalUrl && (
+                    <a href={modalUrl} target="_blank" rel="noreferrer" style={{ color: '#5BC079', fontSize: '12px', fontWeight: 600 }}>Coba buka di tab baru ↗</a>
+                  )}
+                </div>
+              )}
+
+              {/* ── VIDEO player ── */}
+              {!urlLoading && !videoError && modalUrl && modalItem.isVideo && (
+                <video
+                  key={modalUrl}
+                  src={modalUrl}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  onError={(e) => {
+                    // Ketika menggunakan src langsung (tanpa <source>),
+                    // e.target.error adalah MediaError dengan code yang jelas.
+                    const err  = e.target.error
+                    const code = err ? err.code : null
+                    const mediaErrMsg = {
+                      1: 'Pemuatan video dibatalkan oleh pengguna.',
+                      2: 'Error jaringan — video tidak bisa diunduh. Cek koneksi.',
+                      3: 'Codec/format video tidak didukung browser ini.',
+                      4: 'Sumber video tidak ditemukan atau URL sudah kedaluwarsa.',
+                    }
+                    const msg = code
+                      ? (mediaErrMsg[code] || `Error media (kode ${code})`)
+                      : (err?.message || 'Browser menolak memutar video ini.')
+                    console.error('[Video error]', { code, message: err?.message, src: modalUrl })
+                    setVideoError(msg + ' — gunakan tombol Unduh untuk putar secara lokal.')
+                  }}
+                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
+                />
+              )}
+
+              {/* ── FOTO viewer ── */}
+              {!urlLoading && !videoError && modalUrl && !modalItem.isVideo && (
+                <img
+                  src={modalUrl}
+                  alt={modalItem.title}
+                  onError={() => setVideoError('Gagal memuat foto.')}
+                  style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }}
+                />
+              )}
+
+              {/* ── Fallback: belum ada URL dan tidak sedang loading ── */}
+              {!urlLoading && !videoError && !modalUrl && modalItem.isVideo && (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ width: '60px', height: '60px', borderRadius: '50%', background: 'rgba(255,255,255,.92)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 8px 24px rgba(0,0,0,.4)' }}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="#161616"><path d="M8 5v14l11-7z"/></svg>
+                  </div>
+                  <span style={{ color: 'rgba(255,255,255,.5)', fontSize: '12px' }}>Pratinjau tidak tersedia</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
