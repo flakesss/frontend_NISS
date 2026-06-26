@@ -159,7 +159,7 @@ export default function NISSDashboard({
     return () => clearInterval(id)
   }, [])
 
-  // ── Snapshot polling — fetch 1 frame per 100ms saat device online ──
+  // ── Snapshot polling — fetch 1 frame per 500ms saat device online ──
   useEffect(() => {
     if (!online) { setStreamOk(false); return }
     let stopped = false
@@ -176,13 +176,15 @@ export default function NISSDashboard({
             return url
           })
           setStreamOk(true)
+          if (!stopped) setTimeout(poll, 500)
         } else {
           setStreamOk(false)
+          if (!stopped) setTimeout(poll, 2000)
         }
       } catch {
         setStreamOk(false)
+        if (!stopped) setTimeout(poll, 2000)
       }
-      if (!stopped) setTimeout(poll, 100)
     }
     poll()
     return () => { stopped = true }
