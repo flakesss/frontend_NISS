@@ -1,11 +1,15 @@
 // ── API Client ──────────────────────────────────────────────────────────────
-// Semua panggilan ke backend Express (http://localhost:3000) melalui proxy Vite
-// sehingga tidak ada masalah CORS saat development.
+// Dev  : VITE_API_URL tidak di-set → pakai /api → Vite proxy → localhost:3000
+// Prod : VITE_API_URL=https://petal-calibrate-stadium.ngrok-free.dev → Pi langsung
 
-const BASE = '/api'
+const API_URL = import.meta.env.VITE_API_URL || ''
+const BASE    = API_URL ? API_URL : '/api'
+
+// ngrok memblokir request browser tanpa header ini
+const NGROK_HEADERS = API_URL ? { 'ngrok-skip-browser-warning': '1' } : {}
 
 async function get(path) {
-  const res = await fetch(BASE + path)
+  const res = await fetch(BASE + path, { headers: NGROK_HEADERS })
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
   return res.json()
 }
@@ -13,7 +17,7 @@ async function get(path) {
 async function post(path, body) {
   const res = await fetch(BASE + path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...NGROK_HEADERS },
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(`POST ${path} → ${res.status}`)
@@ -34,13 +38,12 @@ export const getEvents    = () => get('/events')
 export const getRecordings     = () => get('/recordings')
 export const getRecordingUrl   = (id) => get(`/recordings/${id}/url`)
 
-// URL streaming langsung melalui backend proxy (tidak perlu async, langsung pakai sebagai src)
-// Backend meneruskan video dari Supabase + mendukung Range request untuk seek
-export const getStreamUrl    = (id) => `/api/recordings/${id}/stream`
-export const getThumbnailUrl = (id) => `/api/recordings/${id}/thumbnail`
+// URL streaming & thumbnail — langsung ke backend Pi (bukan lewat Vite proxy)
+export const getStreamUrl    = (id) => `${BASE}/recordings/${id}/stream`
+export const getThumbnailUrl = (id) => `${BASE}/recordings/${id}/thumbnail`
 
-// URL live stream MJPEG dari Pi (diproxy oleh backend, tidak perlu IP Pi di frontend)
-export const LIVE_STREAM_URL = '/api/stream/live'
+// URL live stream MJPEG dari Pi
+export const LIVE_STREAM_URL = `${BASE}/stream/live`
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 export const sendCommand = (deviceId, cmd) =>
