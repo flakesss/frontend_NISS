@@ -6,7 +6,7 @@ const API_URL = import.meta.env.VITE_API_URL || ''
 const BASE    = API_URL ? API_URL : '/api'
 
 // ngrok memblokir request browser tanpa header ini
-const NGROK_HEADERS = API_URL ? { 'ngrok-skip-browser-warning': '1' } : {}
+export const NGROK_HEADERS = API_URL ? { 'ngrok-skip-browser-warning': '1' } : {}
 
 async function get(path) {
   const res = await fetch(BASE + path, { headers: NGROK_HEADERS })

@@ -8,6 +8,7 @@ import {
   getThumbnailUrl,
   sendCommand,
   SNAPSHOT_URL,
+  NGROK_HEADERS,
 } from './api'
 
 // ─── Konstanta visual (tidak berubah) ────────────────────────────────────────
@@ -166,7 +167,7 @@ export default function NISSDashboard({
     const poll = async () => {
       if (stopped) return
       try {
-        const res = await fetch(`${SNAPSHOT_URL}&_=${Date.now()}`)
+        const res = await fetch(`${SNAPSHOT_URL}&_=${Date.now()}`, { headers: NGROK_HEADERS })
         if (res.ok) {
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
