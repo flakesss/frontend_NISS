@@ -801,8 +801,8 @@ export default function NISSDashboard({
         {[
           { label: 'Live', icon: (
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M22.89 3.11L1.11 20.89M8 4h12a2 2 0 0 1 2 2v10M4 8.82V18a2 2 0 0 0 2 2h10"/>
-              <path d="m17 12 5 2.9V9.1L17 12z"/>
+              <rect x="2" y="7" width="14" height="10" rx="2"/>
+              <path d="m16 9 5-2v10l-5-2V9z"/>
             </svg>
           )},
           { label: 'Riwayat', icon: (
