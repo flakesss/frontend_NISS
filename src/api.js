@@ -39,11 +39,15 @@ export const getRecordings     = () => get('/recordings')
 export const getRecordingUrl   = (id) => get(`/recordings/${id}/url`)
 
 // URL streaming & thumbnail — langsung ke backend Pi (bukan lewat Vite proxy)
-export const getStreamUrl    = (id) => `${BASE}/recordings/${id}/stream`
-export const getThumbnailUrl = (id) => `${BASE}/recordings/${id}/thumbnail`
+const NGROK_QS = API_URL ? '?ngrok-skip-browser-warning=1' : ''
+export const getStreamUrl    = (id) => `${BASE}/recordings/${id}/stream${NGROK_QS}`
+export const getThumbnailUrl = (id) => `${BASE}/recordings/${id}/thumbnail${NGROK_QS}`
 
 // URL live stream MJPEG dari Pi
-export const LIVE_STREAM_URL = `${BASE}/stream/live`
+// Query param ngrok-skip-browser-warning diperlukan karena <img> tidak bisa set header
+export const LIVE_STREAM_URL = API_URL
+  ? `${BASE}/stream/live?ngrok-skip-browser-warning=1`
+  : `${BASE}/stream/live`
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 export const sendCommand = (deviceId, cmd) =>
