@@ -89,11 +89,13 @@ body {
     box-shadow: 0 -4px 20px rgba(0,0,0,.07);
   }
   .niss-bottom-nav-btn {
+    flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     gap: 4px;
-    padding: 6px 20px;
+    padding: 6px 0;
     border: none;
     background: transparent;
     cursor: pointer;

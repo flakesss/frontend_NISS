@@ -143,6 +143,9 @@ export default function NISSDashboard({
   const [cmdLoading,  setCmdLoading]  = useState(false)
   const [cmdError,    setCmdError]    = useState(null)
 
+  // Ref untuk blob URL video yang dibuat saat ngrok-mode — perlu di-revoke saat modal tutup
+  const modalBlobRef = useRef(null)
+
   const recordingRef  = useRef(recording)
   recordingRef.current = recording
 
@@ -334,29 +337,54 @@ export default function NISSDashboard({
 
   // ── Buka modal galeri + ambil media URL ──
   async function openModal(item) {
+    // Revoke blob URL lama jika ada
+    if (modalBlobRef.current) {
+      URL.revokeObjectURL(modalBlobRef.current)
+      modalBlobRef.current = null
+    }
+
     setModalItem(item)
     setModalUrl(null)
     setVideoError(null)
     setModalOpen(true)
 
-    if (!item.id) return  // item dummy/fallback tidak punya id
+    if (!item.id) return
 
     setUrlLoading(true)
     try {
       if (item.isVideo) {
-        // Untuk video: gunakan streaming proxy backend secara langsung.
-        // Ini menghindari CORS dan masalah MIME type dari Supabase.
-        // Backend juga mendukung Range request sehingga seek video berfungsi.
-        setModalUrl(getStreamUrl(item.id))
+        const streamUrl = getStreamUrl(item.id)
+        const needsBypass = Object.keys(NGROK_HEADERS).length > 0
+        if (needsBypass) {
+          // <video> tidak bisa kirim custom header, jadi kita fetch dulu ke blob
+          // agar header ngrok-skip-browser-warning bisa dikirim via fetch()
+          const res = await fetch(streamUrl, { headers: NGROK_HEADERS })
+          if (!res.ok) throw new Error(`Server error ${res.status}`)
+          const blob = await res.blob()
+          const blobUrl = URL.createObjectURL(blob)
+          modalBlobRef.current = blobUrl
+          setModalUrl(blobUrl)
+        } else {
+          // Akses lokal (localhost/dev) — tidak perlu bypass, pakai URL langsung
+          setModalUrl(streamUrl)
+        }
       } else {
-        // Untuk foto: signed URL sudah cukup (browser tidak strict CORS pada <img>)
+        // Foto: signed URL dari Supabase, browser bisa akses langsung
         const { url } = await getRecordingUrl(item.id)
         setModalUrl(url)
       }
     } catch (e) {
-      setVideoError('Gagal mengambil URL media: ' + e.message)
+      setVideoError('Gagal mengambil video: ' + e.message)
     } finally {
       setUrlLoading(false)
+    }
+  }
+
+  function closeModal() {
+    setModalOpen(false)
+    if (modalBlobRef.current) {
+      URL.revokeObjectURL(modalBlobRef.current)
+      modalBlobRef.current = null
     }
   }
 
@@ -380,18 +408,10 @@ export default function NISSDashboard({
     path:    r.storage_path,
   }))
 
-  const activityFallback = [
-    { kind: 'photo', text: 'Foto diambil',          time: '2 mnt lalu',  tag: 'Foto'     },
-    { kind: 'rec',   text: 'Rekaman disimpan',       time: '14 mnt lalu', tag: 'Video'    },
-    { kind: 'ai',    text: 'Analisis AI selesai',    time: '38 mnt lalu', tag: 'Moderate' },
-    { kind: 'photo', text: 'Foto diambil',           time: '52 mnt lalu', tag: 'Foto'     },
-    { kind: 'rec',   text: 'Sesi endoskop dimulai',  time: '1 jam lalu',  tag: 'Normal'   },
-  ]
-  const displayActivities = activities.length > 0 ? activities : activityFallback
-
-  const displaySessions = sessionsToday  > 0 ? sessionsToday  : 5
-  const displayPhotos   = photoRecordings.length > 0 ? photoRecordings.length : 14
-  const displayDuration = totalDurationMnt > 0 ? totalDurationMnt : 82
+  const displayActivities = activities
+  const displaySessions   = sessionsToday
+  const displayPhotos     = photoRecordings.length
+  const displayDuration   = totalDurationMnt
 
   // ── Timestamp live ──
   const [nowStr, setNowStr] = useState('')
@@ -616,7 +636,14 @@ export default function NISSDashboard({
               <button onClick={onPhoto} disabled={cmdLoading} style={{ width: '30px', height: '30px', borderRadius: '10px', background: '#161616', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', fontWeight: 500, lineHeight: 1, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>+</button>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              {displayActivities.map((a, i) => {
+              {displayActivities.length === 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '32px 0', color: '#B0B0B0' }}>
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+                  </svg>
+                  <span style={{ fontSize: '12px', fontWeight: 500 }}>Belum ada aktivitas</span>
+                </div>
+              ) : displayActivities.map((a, i) => {
                 const c = ICON_MAP[a.kind] || ICON_MAP.rec
                 return (
                   <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '11px 0', borderBottom: '1px solid #F2F2F2' }}>
@@ -806,7 +833,7 @@ export default function NISSDashboard({
 
       {/* ── MODAL ── */}
       {modalOpen && (
-        <div onClick={() => setModalOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(16,16,18,.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '40px' }}>
+        <div onClick={() => closeModal()} style={{ position: 'fixed', inset: 0, background: 'rgba(16,16,18,.6)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '40px' }}>
           <div onClick={e => e.stopPropagation()} style={{ background: '#101012', borderRadius: '24px', padding: '16px', width: '780px', maxWidth: '100%', boxShadow: '0 30px 80px rgba(0,0,0,.4)' }}>
 
             {/* Header */}
@@ -832,7 +859,7 @@ export default function NISSDashboard({
                     Unduh
                   </a>
                 )}
-                <button onClick={() => setModalOpen(false)} style={{ width: '32px', height: '32px', borderRadius: '10px', background: 'rgba(255,255,255,.08)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer' }}>
+                <button onClick={() => closeModal()} style={{ width: '32px', height: '32px', borderRadius: '10px', background: 'rgba(255,255,255,.08)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', border: 'none', cursor: 'pointer' }}>
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round">
                     <path d="M6 6l12 12M18 6L6 18"/>
                   </svg>
