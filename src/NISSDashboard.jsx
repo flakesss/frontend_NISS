@@ -7,7 +7,7 @@ import {
   getStreamUrl,
   getThumbnailUrl,
   sendCommand,
-  LIVE_STREAM_URL,
+  SNAPSHOT_URL,
 } from './api'
 
 // ─── Konstanta visual (tidak berubah) ────────────────────────────────────────
@@ -126,7 +126,9 @@ export default function NISSDashboard({
   const [recording,   setRecording]   = useState(false)
   const [elapsed,     setElapsed]     = useState(0)
   const [activeNav,   setActiveNav]   = useState('Live')
-  const [streamOk,    setStreamOk]    = useState(true)
+  const [streamOk,    setStreamOk]    = useState(false)
+  const [frameUrl,    setFrameUrl]    = useState(null)
+  const frameUrlRef = useRef(null)
   const [filterType,  setFilterType]  = useState('Semua') // filter Riwayat: Semua|Video|Foto
 
   // ── state data dari backend ──
@@ -156,6 +158,35 @@ export default function NISSDashboard({
     }, 1000)
     return () => clearInterval(id)
   }, [])
+
+  // ── Snapshot polling — fetch 1 frame per 100ms saat device online ──
+  useEffect(() => {
+    if (!online) { setStreamOk(false); return }
+    let stopped = false
+    const poll = async () => {
+      if (stopped) return
+      try {
+        const res = await fetch(`${SNAPSHOT_URL}&_=${Date.now()}`)
+        if (res.ok) {
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          setFrameUrl(prev => {
+            if (frameUrlRef.current) URL.revokeObjectURL(frameUrlRef.current)
+            frameUrlRef.current = url
+            return url
+          })
+          setStreamOk(true)
+        } else {
+          setStreamOk(false)
+        }
+      } catch {
+        setStreamOk(false)
+      }
+      if (!stopped) setTimeout(poll, 100)
+    }
+    poll()
+    return () => { stopped = true }
+  }, [online])
 
   // ── Polling: status device setiap 3 detik ──
   const fetchDevice = useCallback(async () => {
@@ -439,14 +470,11 @@ export default function NISSDashboard({
           {/* LIVE ENDOSKOP */}
           <div className="niss-live-card" style={{ background: '#101012', borderRadius: '24px', padding: '16px', boxShadow: '0 16px 40px rgba(20,20,20,.10)', position: 'relative', overflow: 'hidden' }}>
             <div className="niss-live-box" style={{ position: 'relative', borderRadius: '18px', overflow: 'hidden', background: '#000' }}>
-              {/* ── Live stream dari Pi (MJPEG via backend proxy) ── */}
-              {streamOk && online ? (
+              {/* ── Live stream dari Pi (snapshot polling) ── */}
+              {streamOk && frameUrl ? (
                 <img
-                  key={LIVE_STREAM_URL}
-                  src={LIVE_STREAM_URL}
+                  src={frameUrl}
                   alt="Live Endoskop"
-                  onError={() => setStreamOk(false)}
-                  onLoad={() => setStreamOk(true)}
                   style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                 />
               ) : (
@@ -462,13 +490,10 @@ export default function NISSDashboard({
                     <span style={{ color: 'rgba(255,255,255,.35)', fontSize: '13px', fontWeight: 500 }}>
                       {online ? 'Menghubungkan ke kamera…' : 'Perangkat offline'}
                     </span>
-                    {!streamOk && online && (
-                      <button
-                        onClick={() => setStreamOk(true)}
-                        style={{ marginTop: '4px', background: 'rgba(255,255,255,.1)', color: 'rgba(255,255,255,.6)', border: '1px solid rgba(255,255,255,.15)', borderRadius: '10px', padding: '6px 14px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}
-                      >
-                        Coba lagi
-                      </button>
+                    {online && !streamOk && (
+                      <span style={{ color: 'rgba(255,255,255,.35)', fontSize: '12px', fontWeight: 500 }}>
+                        Menghubungkan ke kamera…
+                      </span>
                     )}
                   </div>
                 </>

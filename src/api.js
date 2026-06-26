@@ -43,11 +43,8 @@ const NGROK_QS = API_URL ? '?ngrok-skip-browser-warning=1' : ''
 export const getStreamUrl    = (id) => `${BASE}/recordings/${id}/stream${NGROK_QS}`
 export const getThumbnailUrl = (id) => `${BASE}/recordings/${id}/thumbnail${NGROK_QS}`
 
-// URL live stream MJPEG dari Pi
-// Query param ngrok-skip-browser-warning diperlukan karena <img> tidak bisa set header
-export const LIVE_STREAM_URL = API_URL
-  ? `${BASE}/stream/live?ngrok-skip-browser-warning=1`
-  : `${BASE}/stream/live`
+// Snapshot URL — dipakai frontend untuk polling frame (lebih andal dari MJPEG melalui proxy)
+export const SNAPSHOT_URL = `${BASE}/stream/snapshot${NGROK_QS}`
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 export const sendCommand = (deviceId, cmd) =>
