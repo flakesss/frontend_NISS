@@ -4,7 +4,11 @@ Dashboard web untuk sistem endoskopi NISS. Dibangun dengan React + Vite, di-depl
 
 ## Fitur
 
-- **Live stream** kamera endoskopi via snapshot polling (JPEG setiap 500ms)
+- **Live stream** kamera endoskopi via MJPEG asli (`/stream/live`), otomatis jatuh ke snapshot polling kalau MJPEG gagal dimuat
+- **Label resolusi & FPS dinamis** — dibaca langsung dari kamera Pi (`/stream/info`), menampilkan FPS terukur nyata saat mode polling aktif
+- **Toggle Mode: Normal / Compressive Sensing** — bandingkan live view JPEG biasa vs payload Compressive Sensing (belum direkonstruksi di Pi, direkonstruksi di server), lengkap dengan statistik ukuran byte
+- **Analisis Faringitis on-demand** (DenseNet121) — dijalankan dari galeri (foto langsung, video lewat thumbnail frame pertama), bukan otomatis tiap frame
+- **Indikator terenkripsi** (🔒) pada status device — menandakan koneksi MQTT device sudah AES-128-GCM
 - **Rekam video & foto** dengan kontrol langsung dari browser
 - **Galeri & Riwayat** rekaman dan foto tersimpan di Supabase
 - **Database view** tabel lengkap semua media
@@ -132,5 +136,6 @@ npm run lint     # lint dengan oxlint
 ## Catatan
 
 - **Format video**: backend otomatis transcode ke H.264 MP4 via ffmpeg sebelum dikirim ke browser
-- **Snapshot polling**: live stream menggunakan polling JPEG setiap 500ms (bukan MJPEG stream) untuk kompatibilitas lintas browser dan proxy
+- **Live view**: mencoba MJPEG asli (`/stream/live`) dulu untuk latensi terbaik; kalau gagal dimuat (`onError`), otomatis jatuh ke snapshot polling (500ms) sebagai fallback — lihat `NISSDashboard.jsx` state `streamMode`
+- **Mode Compressive Sensing**: toggle ini memaksa `streamMode` ke polling (belum ada varian MJPEG untuk CS) dan memakai endpoint `/stream/snapshot/cs` — payload CS harus direkonstruksi dulu di server (OMP+DCT) sebelum bisa ditampilkan, jadi latensinya lebih tinggi dari mode Normal. Butuh Pi & backend yang sudah diperbarui (lihat `PI_UPDATE.md` di repo `devices_NISS`), kalau belum akan gagal 503/502.
 - **Cloudflare Tunnel**: akses publik backend via `app.satsetin.com`, dikelola Docker Compose di sisi server
