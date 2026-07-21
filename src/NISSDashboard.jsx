@@ -3,7 +3,6 @@ import {
   getDevice,
   getEvents,
   getRecordings,
-  getRecordingUrl,
   getStreamUrl,
   getThumbnailUrl,
   sendCommand,
@@ -454,29 +453,27 @@ export default function NISSDashboard({
 
     setUrlLoading(true)
     try {
-      if (item.isVideo) {
-        const streamUrl = getStreamUrl(item.id)
-        const needsBypass = Object.keys(NGROK_HEADERS).length > 0
-        if (needsBypass) {
-          // <video> tidak bisa kirim custom header, jadi kita fetch dulu ke blob
-          // agar header ngrok-skip-browser-warning bisa dikirim via fetch()
-          const res = await fetch(streamUrl, { headers: NGROK_HEADERS })
-          if (!res.ok) throw new Error(`Server error ${res.status}`)
-          const blob = await res.blob()
-          const blobUrl = URL.createObjectURL(blob)
-          modalBlobRef.current = blobUrl
-          setModalUrl(blobUrl)
-        } else {
-          // Akses lokal (localhost/dev) — tidak perlu bypass, pakai URL langsung
-          setModalUrl(streamUrl)
-        }
+      // Foto & video sama-sama lewat proxy backend (/recordings/:id/stream), BUKAN
+      // signed URL Supabase langsung -- file di storage sekarang terenkripsi (.enc),
+      // signed URL Supabase cuma mengarah ke ciphertext mentah yang tidak bisa
+      // ditampilkan browser (memicu CORB). Backend yang mendekripsinya dulu.
+      const streamUrl = getStreamUrl(item.id)
+      const needsBypass = Object.keys(NGROK_HEADERS).length > 0
+      if (needsBypass) {
+        // <video>/<img> tidak bisa kirim custom header, jadi fetch dulu ke blob
+        // agar header ngrok-skip-browser-warning bisa dikirim via fetch()
+        const res = await fetch(streamUrl, { headers: NGROK_HEADERS })
+        if (!res.ok) throw new Error(`Server error ${res.status}`)
+        const blob = await res.blob()
+        const blobUrl = URL.createObjectURL(blob)
+        modalBlobRef.current = blobUrl
+        setModalUrl(blobUrl)
       } else {
-        // Foto: signed URL dari Supabase, browser bisa akses langsung
-        const { url } = await getRecordingUrl(item.id)
-        setModalUrl(url)
+        // Akses lokal (localhost/dev) — tidak perlu bypass, pakai URL langsung
+        setModalUrl(streamUrl)
       }
     } catch (e) {
-      setVideoError('Gagal mengambil video: ' + e.message)
+      setVideoError('Gagal mengambil media: ' + e.message)
     } finally {
       setUrlLoading(false)
     }
