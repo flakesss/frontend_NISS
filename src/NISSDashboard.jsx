@@ -1214,12 +1214,16 @@ export default function NISSDashboard({
                         <div style={{ fontSize: '11px', color: '#8A8A8A' }}>Payload CS (simulasi)</div>
                       </div>
                       <div>
-                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{(csQuality.originalBytes / 1024).toFixed(1)} KB</div>
-                        <div style={{ fontSize: '11px', color: '#8A8A8A' }}>File asli (JPEG)</div>
+                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{(csQuality.rawPixelBytes / 1024 / 1024).toFixed(2)} MB</div>
+                        <div style={{ fontSize: '11px', color: '#8A8A8A' }}>File asli (raw, belum dikompresi)</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#5BC079' }}>{(csQuality.rawPixelBytes / csQuality.csPayloadBytes).toFixed(2)}×</div>
+                        <div style={{ fontSize: '11px', color: '#8A8A8A' }}>Lebih kecil dari raw</div>
                       </div>
                     </div>
                     <div style={{ fontSize: '11px', color: '#666', marginTop: '8px' }}>
-                      Simulasi encode+decode CS di atas file JPEG yang tersimpan — bukan payload asli yang dikirim dari Pi (yang mengukur langsung dari frame kamera mentah, bukan hasil JPEG).
+                      Simulasi encode+decode CS di atas file JPEG yang tersimpan ({(csQuality.originalBytes / 1024).toFixed(1)} KB) — perbandingan ukuran di atas terhadap data mentah (raw, belum ada kompresi apa pun), bukan terhadap JPEG. Bukan payload asli yang dikirim dari Pi (yang mengukur langsung dari frame kamera mentah saat live, lihat toggle "Mode: Compressive Sensing" di live view).
                     </div>
                   </div>
                 ) : null}
