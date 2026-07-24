@@ -57,8 +57,9 @@ export const SNAPSHOT_CS_URL = `${BASE}/stream/snapshot/cs`
 export const getCsStats = () => get('/stream/cs-stats')
 
 // ── Commands ─────────────────────────────────────────────────────────────────
-export const sendCommand = (deviceId, cmd) =>
-  post(`/devices/${deviceId}/command`, { cmd })
+// extra: field tambahan opsional (mis. { mr: 70 } untuk foto via CS)
+export const sendCommand = (deviceId, cmd, extra) =>
+  post(`/devices/${deviceId}/command`, { cmd, ...extra })
 
 // Ubah MR (measurement rate) live-encode CS di Pi secara langsung (real-time,
 // bukan simulasi) — dipakai oleh slider MR pada toggle "Mode: Compressive Sensing"

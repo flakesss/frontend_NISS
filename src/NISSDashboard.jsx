@@ -144,6 +144,8 @@ export default function NISSDashboard({
   const [liveMr,        setLiveMr]        = useState(100)  // MR (%) live-encode CS aktual di Pi
   const [liveMrSending,  setLiveMrSending] = useState(false)
   const liveMrInitRef = useRef(false)  // supaya nilai awal dari /info tidak menimpa slider setelah user ganti
+  const [csCaptureEnabled, setCsCaptureEnabled] = useState(false)  // foto disimpan = hasil rekonstruksi CS (bukan JPEG mentah)
+  const [csCaptureMr,      setCsCaptureMr]      = useState(70)     // MR dipakai sebelum tombol Foto ditekan
   const [analyzing,   setAnalyzing]   = useState(false)
   const [analysis,    setAnalysis]    = useState(null)   // { prediction, confidence, probabilities }
   const [analysisErr, setAnalysisErr] = useState(null)
@@ -390,14 +392,14 @@ export default function NISSDashboard({
   }).length
 
   // ── Kirim perintah ke device ──
-  async function sendCmd(cmd) {
+  async function sendCmd(cmd, extra) {
     setCmdError(null)
     setCmdLoading(true)
     // Catat waktu & nama command agar grace period aktif
     cmdSentAtRef.current = Date.now()
     lastCmdRef.current   = cmd
     try {
-      await sendCommand(deviceId, cmd)
+      await sendCommand(deviceId, cmd, extra)
     } catch (e) {
       setCmdError(e.message)
       // Batalkan grace period jika command gagal terkirim (lanjutan di bawah)
@@ -435,7 +437,7 @@ export default function NISSDashboard({
   }
 
   function onPhoto() {
-    sendCmd('foto')
+    sendCmd('foto', csCaptureEnabled ? { mr: csCaptureMr } : undefined)
   }
 
   // ── Analisis faringitis on-demand dari foto/video yang sedang dibuka di modal ──
@@ -793,6 +795,43 @@ export default function NISSDashboard({
               <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)', width: '54px', height: '54px', border: '1px solid rgba(255,255,255,.22)', borderRadius: '50%' }}></div>
               <div style={{ position: 'absolute', bottom: '14px', left: '14px', color: 'rgba(255,255,255,.55)', fontSize: '10px', fontWeight: 500, letterSpacing: '.05em' }}>{nowStr}</div>
             </div>
+
+            {/* toggle Foto via CS: diatur SEBELUM capture, foto tersimpan = hasil rekonstruksi CS */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', padding: '10px 6px 0', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setCsCaptureEnabled(v => !v)}
+                title="Jika aktif, foto yang tersimpan adalah hasil rekonstruksi Compressive Sensing pada MR di samping (bukan JPEG mentah kamera)"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  background: csCaptureEnabled ? 'rgba(122,90,245,.92)' : 'rgba(255,255,255,.08)',
+                  color: csCaptureEnabled ? '#fff' : 'rgba(255,255,255,.6)',
+                  border: 'none', borderRadius: '10px', padding: '6px 11px',
+                  fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                }}
+              >
+                Foto via CS: {csCaptureEnabled ? 'ON' : 'OFF'}
+              </button>
+              {csCaptureEnabled && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,.06)', borderRadius: '10px', padding: '6px 11px' }}>
+                  <span style={{ color: 'rgba(255,255,255,.5)', fontSize: '11px', fontWeight: 600 }}>MR</span>
+                  <input
+                    type="range"
+                    min={10}
+                    max={100}
+                    step={5}
+                    value={csCaptureMr}
+                    onChange={(e) => setCsCaptureMr(Number(e.target.value))}
+                    style={{ width: '110px', accentColor: '#7A5AF5' }}
+                  />
+                  <span style={{ color: '#fff', fontSize: '11px', fontWeight: 700, minWidth: '30px' }}>{csCaptureMr}%</span>
+                </div>
+              )}
+            </div>
+            {csCaptureEnabled && (
+              <div style={{ textAlign: 'center', color: 'rgba(255,255,255,.4)', fontSize: '10px', padding: '4px 12px 0' }}>
+                Foto akan diproses CS (encode+rekonstruksi OMP) di Pi sebelum disimpan — bisa perlu beberapa detik lebih lama dari biasanya.
+              </div>
+            )}
 
             {/* capture controls */}
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '18px 6px 6px' }}>
