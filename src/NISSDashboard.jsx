@@ -484,9 +484,10 @@ export default function NISSDashboard({
         // Foto ini sudah hasil CS NYATA saat capture (toggle "Foto via CS"),
         // bukan JPEG mentah. Jangan di-CS ulang di sini -- itu akan
         // melipatgandakan lossy-nya dan datanya tidak lagi jujur. Tampilkan
-        // metadata ASLI yang tersimpan saat capture. PSNR/SSIM tidak bisa
-        // dihitung ulang karena frame sebelum kompresi memang tidak disimpan
-        // (itu justru intinya CS: hemat bandwidth di sisi pengirim).
+        // metadata ASLI yang tersimpan saat capture. PSNR/SSIM (kalau ada)
+        // sudah dihitung di Pi terhadap frame sebelum kompresi, sesaat sebelum
+        // frame itu dibuang -- foto lama (sebelum fitur ini ditambahkan)
+        // mungkin belum punya nilainya, makanya tetap null-safe di sini.
         const bitmap = await createImageBitmap(blob)
         setCsQuality({
           csType: 'OMP+DCT (YCbCr) — hasil capture NYATA di Pi, bukan simulasi',
@@ -494,8 +495,8 @@ export default function NISSDashboard({
           blockSize: null,
           csPayloadBytes: modalItem.csPayloadBytes,
           rawPixelBytes: bitmap.width * bitmap.height * 3,
-          psnr: null,
-          ssim: null,
+          psnr: modalItem.csPsnr,
+          ssim: modalItem.csSsim,
           isRealCapture: true,
         })
         return
@@ -604,6 +605,8 @@ export default function NISSDashboard({
     path:    r.storage_path,
     csMrPercent: r.cs_mr_percent ?? null,       // MR asli dipakai saat capture (foto via CS)
     csPayloadBytes: r.cs_payload_bytes ?? null,
+    csPsnr: r.cs_psnr ?? null,
+    csSsim: r.cs_ssim ?? null,
   }))
 
   const displayActivities = activities
@@ -1017,6 +1020,8 @@ export default function NISSDashboard({
             path:    r.storage_path,
             csMrPercent: r.cs_mr_percent ?? null,
             csPayloadBytes: r.cs_payload_bytes ?? null,
+    csPsnr: r.cs_psnr ?? null,
+    csSsim: r.cs_ssim ?? null,
           }))
           return (
             <div style={{ background: '#fff', borderRadius: '22px', padding: '24px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
@@ -1370,15 +1375,15 @@ export default function NISSDashboard({
                       {csQuality.csType}{csQuality.blockSize ? ` · MR ${csQuality.mrPercent}% · blok ${csQuality.blockSize}×${csQuality.blockSize}` : ` · MR ${csQuality.mrPercent}%`}
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px' }}>
-                      {!csQuality.isRealCapture && (
+                      {(csQuality.psnr != null && csQuality.ssim != null) && (
                         <>
                           <div>
                             <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{csQuality.psnr} dB</div>
-                            <div style={{ fontSize: '11px', color: '#8A8A8A' }}>PSNR</div>
+                            <div style={{ fontSize: '11px', color: '#8A8A8A' }}>PSNR{csQuality.isRealCapture ? ' (asli)' : ''}</div>
                           </div>
                           <div>
                             <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{csQuality.ssim}</div>
-                            <div style={{ fontSize: '11px', color: '#8A8A8A' }}>SSIM</div>
+                            <div style={{ fontSize: '11px', color: '#8A8A8A' }}>SSIM{csQuality.isRealCapture ? ' (asli)' : ''}</div>
                           </div>
                         </>
                       )}
@@ -1397,7 +1402,9 @@ export default function NISSDashboard({
                     </div>
                     <div style={{ fontSize: '11px', color: '#666', marginTop: '8px' }}>
                       {csQuality.isRealCapture
-                        ? 'Ini payload CS NYATA yang dipakai saat capture di Pi (MR terkunci, tidak bisa disimulasikan ulang) — PSNR/SSIM tidak tersedia karena frame sebelum kompresi memang tidak disimpan (itulah intinya CS: hemat bandwidth di sisi pengirim).'
+                        ? (csQuality.psnr != null
+                            ? 'Ini payload CS NYATA yang dipakai saat capture di Pi (MR terkunci, tidak bisa disimulasikan ulang) — PSNR/SSIM dihitung langsung di Pi terhadap frame sebelum kompresi, sesaat sebelum frame itu dibuang.'
+                            : 'Ini payload CS NYATA yang dipakai saat capture di Pi (MR terkunci, tidak bisa disimulasikan ulang) — PSNR/SSIM tidak tersedia untuk foto ini (diambil sebelum fitur perhitungan PSNR/SSIM ditambahkan).')
                         : `Simulasi encode+decode CS di atas file JPEG yang tersimpan (${(csQuality.originalBytes / 1024).toFixed(1)} KB) — perbandingan ukuran di atas terhadap data mentah (raw, belum ada kompresi apa pun), bukan terhadap JPEG. Bukan payload asli yang dikirim dari Pi (yang mengukur langsung dari frame kamera mentah saat live, lihat toggle "Mode: Compressive Sensing" di live view).`}
                     </div>
                   </div>
