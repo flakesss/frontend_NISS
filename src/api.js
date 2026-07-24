@@ -60,6 +60,11 @@ export const getCsStats = () => get('/stream/cs-stats')
 export const sendCommand = (deviceId, cmd) =>
   post(`/devices/${deviceId}/command`, { cmd })
 
+// Ubah MR (measurement rate) live-encode CS di Pi secara langsung (real-time,
+// bukan simulasi) — dipakai oleh slider MR pada toggle "Mode: Compressive Sensing"
+export const setCsMr = (deviceId, mrPercent) =>
+  post(`/devices/${deviceId}/command`, { cmd: 'set_cs_mr', mr: mrPercent })
+
 // ── Analisis faringitis on-demand ────────────────────────────────────────────
 // imageBlob: Blob JPEG (mis. dari snapshot yang sedang ditampilkan)
 export async function analyzePhoto(imageBlob) {
@@ -74,8 +79,9 @@ export async function analyzePhoto(imageBlob) {
 
 // ── Info kompresi CS (toggle "Info Kompresi" pada modal galeri) ──────────────
 // imageBlob: Blob JPEG (foto atau thumbnail video yang sedang dibuka di modal)
-export async function getCsQuality(imageBlob) {
-  const res = await fetch(BASE + '/cs-quality', {
+export async function getCsQuality(imageBlob, mrPercent) {
+  const qs = mrPercent ? `?mr=${encodeURIComponent(mrPercent)}` : ''
+  const res = await fetch(BASE + '/cs-quality' + qs, {
     method: 'POST',
     headers: { 'Content-Type': 'image/jpeg', ...NGROK_HEADERS },
     body: imageBlob,
