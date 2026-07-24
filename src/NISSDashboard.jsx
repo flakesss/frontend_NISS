@@ -479,6 +479,28 @@ export default function NISSDashboard({
         blob = await res.blob()
         csImageBlobRef.current = blob
       }
+
+      if (modalItem.csMrPercent != null && !modalItem.isVideo) {
+        // Foto ini sudah hasil CS NYATA saat capture (toggle "Foto via CS"),
+        // bukan JPEG mentah. Jangan di-CS ulang di sini -- itu akan
+        // melipatgandakan lossy-nya dan datanya tidak lagi jujur. Tampilkan
+        // metadata ASLI yang tersimpan saat capture. PSNR/SSIM tidak bisa
+        // dihitung ulang karena frame sebelum kompresi memang tidak disimpan
+        // (itu justru intinya CS: hemat bandwidth di sisi pengirim).
+        const bitmap = await createImageBitmap(blob)
+        setCsQuality({
+          csType: 'OMP+DCT (YCbCr) — hasil capture NYATA di Pi, bukan simulasi',
+          mrPercent: modalItem.csMrPercent,
+          blockSize: null,
+          csPayloadBytes: modalItem.csPayloadBytes,
+          rawPixelBytes: bitmap.width * bitmap.height * 3,
+          psnr: null,
+          ssim: null,
+          isRealCapture: true,
+        })
+        return
+      }
+
       const result = await getCsQuality(blob, mrPercent)
       setCsQuality(result)
     } catch (e) {
@@ -518,7 +540,10 @@ export default function NISSDashboard({
     setCsQualityOpen(false)
     setCsQuality(null)
     setCsQualityErr(null)
-    setCsMrPercent(100)
+    // Kalau foto ini diambil lewat toggle "Foto via CS", MR sudah TETAP (baked-in)
+    // saat capture -- pakai MR asli itu, jangan default 100, supaya panel "Info
+    // Kompresi" tidak menyimulasikan ulang di MR yang berbeda dari kenyataan.
+    setCsMrPercent(item.csMrPercent ?? 100)
     csImageBlobRef.current = null
 
     if (!item.id) return
@@ -577,6 +602,8 @@ export default function NISSDashboard({
     isVideo: r.type === 'video',
     bg:      THUMB_BG[i % THUMB_BG.length],
     path:    r.storage_path,
+    csMrPercent: r.cs_mr_percent ?? null,       // MR asli dipakai saat capture (foto via CS)
+    csPayloadBytes: r.cs_payload_bytes ?? null,
   }))
 
   const displayActivities = activities
@@ -988,6 +1015,8 @@ export default function NISSDashboard({
             isVideo: r.type === 'video',
             bg:      THUMB_BG[i % THUMB_BG.length],
             path:    r.storage_path,
+            csMrPercent: r.cs_mr_percent ?? null,
+            csPayloadBytes: r.cs_payload_bytes ?? null,
           }))
           return (
             <div style={{ background: '#fff', borderRadius: '22px', padding: '24px', boxShadow: '0 8px 26px rgba(20,20,20,.05)' }}>
@@ -1296,26 +1325,32 @@ export default function NISSDashboard({
                 background: csQualityErr ? 'rgba(239,68,68,.08)' : 'rgba(122,90,245,.08)',
                 border: `1px solid ${csQualityErr ? 'rgba(239,68,68,.25)' : 'rgba(122,90,245,.25)'}`,
               }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-                  <span style={{ fontSize: '12px', fontWeight: 600, color: 'rgba(255,255,255,.7)', whiteSpace: 'nowrap' }}>
-                    MR (measurement rate)
-                  </span>
-                  <input
-                    type="range"
-                    min={10}
-                    max={100}
-                    step={5}
-                    value={csMrPercent}
-                    disabled={csQualityLoading}
-                    onChange={(e) => setCsMrPercent(Number(e.target.value))}
-                    onMouseUp={(e) => onCsMrChange(Number(e.target.value))}
-                    onTouchEnd={(e) => onCsMrChange(Number(e.target.value))}
-                    style={{ flex: 1, accentColor: '#7A5AF5' }}
-                  />
-                  <span style={{ fontSize: '13px', fontWeight: 700, color: '#B9A6FF', minWidth: '38px', textAlign: 'right' }}>
-                    {csMrPercent}%
-                  </span>
-                </div>
+                {modalItem.csMrPercent != null ? (
+                  <div style={{ fontSize: '11px', color: '#B9A6FF', fontWeight: 600, marginBottom: '10px' }}>
+                    MR terkunci di {modalItem.csMrPercent}% — foto ini diambil langsung lewat toggle "Foto via CS", MR tidak bisa diubah retroaktif.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                    <span style={{ fontSize: '12px', fontWeight: 600, color: 'rgba(255,255,255,.7)', whiteSpace: 'nowrap' }}>
+                      MR (measurement rate)
+                    </span>
+                    <input
+                      type="range"
+                      min={10}
+                      max={100}
+                      step={5}
+                      value={csMrPercent}
+                      disabled={csQualityLoading}
+                      onChange={(e) => setCsMrPercent(Number(e.target.value))}
+                      onMouseUp={(e) => onCsMrChange(Number(e.target.value))}
+                      onTouchEnd={(e) => onCsMrChange(Number(e.target.value))}
+                      style={{ flex: 1, accentColor: '#7A5AF5' }}
+                    />
+                    <span style={{ fontSize: '13px', fontWeight: 700, color: '#B9A6FF', minWidth: '38px', textAlign: 'right' }}>
+                      {csMrPercent}%
+                    </span>
+                  </div>
+                )}
                 {csQualityLoading ? (
                   <span style={{ fontSize: '13px', fontWeight: 600, color: 'rgba(255,255,255,.6)' }}>Menghitung info kompresi…</span>
                 ) : csQualityErr ? (
@@ -1323,20 +1358,24 @@ export default function NISSDashboard({
                 ) : csQuality ? (
                   <div>
                     <div style={{ fontSize: '12px', fontWeight: 600, color: '#B9A6FF', marginBottom: '8px' }}>
-                      {csQuality.csType} · MR {csQuality.mrPercent}% · blok {csQuality.blockSize}×{csQuality.blockSize}
+                      {csQuality.csType}{csQuality.blockSize ? ` · MR ${csQuality.mrPercent}% · blok ${csQuality.blockSize}×${csQuality.blockSize}` : ` · MR ${csQuality.mrPercent}%`}
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px' }}>
-                      <div>
-                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{csQuality.psnr} dB</div>
-                        <div style={{ fontSize: '11px', color: '#8A8A8A' }}>PSNR</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{csQuality.ssim}</div>
-                        <div style={{ fontSize: '11px', color: '#8A8A8A' }}>SSIM</div>
-                      </div>
+                      {!csQuality.isRealCapture && (
+                        <>
+                          <div>
+                            <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{csQuality.psnr} dB</div>
+                            <div style={{ fontSize: '11px', color: '#8A8A8A' }}>PSNR</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{csQuality.ssim}</div>
+                            <div style={{ fontSize: '11px', color: '#8A8A8A' }}>SSIM</div>
+                          </div>
+                        </>
+                      )}
                       <div>
                         <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{(csQuality.csPayloadBytes / 1024).toFixed(1)} KB</div>
-                        <div style={{ fontSize: '11px', color: '#8A8A8A' }}>Payload CS (simulasi)</div>
+                        <div style={{ fontSize: '11px', color: '#8A8A8A' }}>Payload CS {csQuality.isRealCapture ? '(asli, dikirim Pi)' : '(simulasi)'}</div>
                       </div>
                       <div>
                         <div style={{ fontSize: '18px', fontWeight: 700, color: '#fff' }}>{(csQuality.rawPixelBytes / 1024 / 1024).toFixed(2)} MB</div>
@@ -1348,7 +1387,9 @@ export default function NISSDashboard({
                       </div>
                     </div>
                     <div style={{ fontSize: '11px', color: '#666', marginTop: '8px' }}>
-                      Simulasi encode+decode CS di atas file JPEG yang tersimpan ({(csQuality.originalBytes / 1024).toFixed(1)} KB) — perbandingan ukuran di atas terhadap data mentah (raw, belum ada kompresi apa pun), bukan terhadap JPEG. Bukan payload asli yang dikirim dari Pi (yang mengukur langsung dari frame kamera mentah saat live, lihat toggle "Mode: Compressive Sensing" di live view).
+                      {csQuality.isRealCapture
+                        ? 'Ini payload CS NYATA yang dipakai saat capture di Pi (MR terkunci, tidak bisa disimulasikan ulang) — PSNR/SSIM tidak tersedia karena frame sebelum kompresi memang tidak disimpan (itulah intinya CS: hemat bandwidth di sisi pengirim).'
+                        : `Simulasi encode+decode CS di atas file JPEG yang tersimpan (${(csQuality.originalBytes / 1024).toFixed(1)} KB) — perbandingan ukuran di atas terhadap data mentah (raw, belum ada kompresi apa pun), bukan terhadap JPEG. Bukan payload asli yang dikirim dari Pi (yang mengukur langsung dari frame kamera mentah saat live, lihat toggle "Mode: Compressive Sensing" di live view).`}
                     </div>
                   </div>
                 ) : null}
