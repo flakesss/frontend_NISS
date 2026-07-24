@@ -1326,13 +1326,21 @@ export default function NISSDashboard({
                 border: `1px solid ${csQualityErr ? 'rgba(239,68,68,.25)' : 'rgba(122,90,245,.25)'}`,
               }}>
                 {modalItem.csMrPercent != null ? (
-                  <div style={{ fontSize: '11px', color: '#B9A6FF', fontWeight: 600, marginBottom: '10px' }}>
-                    MR terkunci di {modalItem.csMrPercent}% — foto ini diambil langsung lewat toggle "Foto via CS", MR tidak bisa diubah retroaktif.
+                  <div style={{ fontSize: '11px', color: '#B9A6FF', fontWeight: 600, marginBottom: '10px', lineHeight: 1.5 }}>
+                    ✅ MR ASLI saat capture: <b>{modalItem.csMrPercent}%</b> — foto ini diambil langsung lewat toggle "Foto via CS", nilainya terkunci (tidak bisa diubah retroaktif, karena file yang tersimpan memang hasil rekonstruksi di MR itu).
                   </div>
                 ) : (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                  <div style={{ marginBottom: '10px' }}>
+                    <div style={{
+                      fontSize: '11px', color: '#F5A623', fontWeight: 600, marginBottom: '8px',
+                      background: 'rgba(245,166,35,.1)', border: '1px solid rgba(245,166,35,.25)',
+                      borderRadius: '8px', padding: '6px 10px', lineHeight: 1.5,
+                    }}>
+                      ⚠️ {modalItem.isVideo ? 'Video' : 'Foto'} ini <b>TIDAK diproses CS</b> saat disimpan (JPEG/MP4 asli dari kamera). Slider MR di bawah hanya <b>simulasi preview</b> — geser untuk melihat "seandainya di-CS di MR sekian, hasilnya seperti apa", bukan laporan MR yang benar-benar dipakai.
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     <span style={{ fontSize: '12px', fontWeight: 600, color: 'rgba(255,255,255,.7)', whiteSpace: 'nowrap' }}>
-                      MR (measurement rate)
+                      MR simulasi
                     </span>
                     <input
                       type="range"
@@ -1349,6 +1357,7 @@ export default function NISSDashboard({
                     <span style={{ fontSize: '13px', fontWeight: 700, color: '#B9A6FF', minWidth: '38px', textAlign: 'right' }}>
                       {csMrPercent}%
                     </span>
+                    </div>
                   </div>
                 )}
                 {csQualityLoading ? (
